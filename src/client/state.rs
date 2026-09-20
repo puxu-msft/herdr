@@ -104,6 +104,24 @@ impl ClientState {
         self.repaint_pending = true;
     }
 
+    #[cfg(windows)]
+    pub(super) fn apply_host_capabilities(
+        &mut self,
+        kitty_graphics: bool,
+        synchronized_output: bool,
+    ) -> bool {
+        let kitty_changed = self.kitty_graphics_enabled != kitty_graphics;
+        self.kitty_graphics_enabled = kitty_graphics;
+        let synchronized_changed = self
+            .blit_encoder
+            .set_synchronized_output(synchronized_output);
+        if kitty_changed || synchronized_changed {
+            self.request_repaint();
+            return true;
+        }
+        false
+    }
+
     pub(super) fn freeze_presentation(&mut self) {
         self.presentation_frozen = true;
     }

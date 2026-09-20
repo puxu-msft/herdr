@@ -82,7 +82,11 @@ switch_ascii_input_source_in_prefix = true
 
 Windows 上の一部のエージェントは `ctrl+v` を受け取り、クリップボード画像を直接読み取れます。Herdr 自身のクリップボード画像リーダーはローカルのネイティブ Windows ペインには配線されていないため、エージェント自身による画像貼り付けはターミナルとエージェントに依存します。`alt+v` などエージェントの画像貼り付けショートカットによって、Herdr が管理するローカルクリップボードブリッジが追加されるわけではありません。リモートクリップボード画像ブリッジは、Linux/macOS/Windows ホストへの `herdr --remote` で別途サポートされます。
 
-Kitty graphics はデフォルトで有効で、外側のターミナルに依存します。Herdr は他のプラットフォームと同様に Windows でも Kitty graphics protocol の出力を送ります。この経路は Windows の WezTerm から WSL 内の Herdr をホストする構成で動作確認されていますが、ネイティブ Windows のターミナルと ConPTY の組み合わせはすべて検証済みではありません。Windows Terminal は Herdr が使う Kitty graphics 経路を提供しません。外側のターミナルがグラフィックス出力を正しく扱えない場合は、`[terminal].kitty_graphics = false` に設定してください。
+Kitty graphics はデフォルトで「要求」されますが、Windows では外側のターミナルが実行時の能力問い合わせに応答してから有効になります。ネゴシエーションに成功するまで、Herdr は Kitty graphics protocol を出力しません。Windows Terminal は Herdr が使用する Kitty graphics 経路を広告しないため、そこでのグラフィックスは無効のままです。WezTerm などの互換ターミナルでは、問い合わせが成功すると有効になります。グラフィックスを完全に無効にするには `[terminal].kitty_graphics = false` を設定してください。
+
+Herdr は synchronized output を再描画の区切りに使う前にもネゴシエーションします。モード問い合わせに応答しないターミナルでは、未ネゴシエートの `CSI ? 2026 h/l` シーケンスを送らず、通常のカーソル非表示による再描画経路を使います。
+
+Windows 入力バックエンドが VT 応答を受信できる場合、Herdr は標準 OSC の既定前景色/背景色と XTWINOPS のセルサイズも問い合わせます。有効な応答はクライアントテーマと画像ジオメトリを更新し、非対応ターミナルでは既存の既定値がそのまま使われます。
 
 ## 既知の注意点
 

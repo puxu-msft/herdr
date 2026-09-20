@@ -1,11 +1,14 @@
 #[cfg(windows)]
 use std::collections::VecDeque;
 #[cfg(windows)]
+use std::fs::OpenOptions;
+#[cfg(windows)]
+use std::io::{self, Write as _};
+#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::sync::Arc;
-#[cfg(windows)]
-use std::{fs::OpenOptions, io::Write as _};
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use tokio::sync::mpsc;
@@ -20,25 +23,49 @@ pub(super) fn raw_console_reader_loop(
     handle: windows_sys::Win32::Foundation::HANDLE,
     event_tx: mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
+    probe_kitty_graphics: bool,
+    host_color_query_sent: bool,
+    host_cell_size_query_sent: bool,
 ) {
     let mut mapper = WindowsInputMapper::default();
-    let mut pump = WindowsInputPump::default();
+    let mut pump = WindowsInputPump::new(host_color_query_sent, host_cell_size_query_sent);
     let mut handoff = WindowsInputHandoff::default();
+    let mut capability_probe = WindowsHostCapabilityProbe::start(probe_kitty_graphics);
 
     while !should_quit.load(Ordering::Acquire) {
         let mut trace = windows_input_trace_enabled().then(WindowsInputTraceBatch::default);
-        match windows_console_input_items(handle, &mut mapper, trace.as_mut()) {
-            WindowsInputItems::Items(items) => {
-                process_platform_input_items(items, &mut pump, &mut handoff, trace.as_mut());
+        match windows_console_input_items(handle) {
+            WindowsInputItems::Items(records) => {
+                let records =
+                    observe_host_capability_probe(&mut capability_probe, records, &event_tx);
+                process_windows_input_records(
+                    records,
+                    &mut mapper,
+                    &mut pump,
+                    &mut handoff,
+                    trace.as_mut(),
+                    &event_tx,
+                );
             }
             WindowsInputItems::Idle => {
+                let records = flush_host_capability_probe(&mut capability_probe, &event_tx, false);
+                process_windows_input_records(
+                    records,
+                    &mut mapper,
+                    &mut pump,
+                    &mut handoff,
+                    trace.as_mut(),
+                    &event_tx,
+                );
                 process_platform_input_items(
                     mapper.idle(),
                     &mut pump,
                     &mut handoff,
                     trace.as_mut(),
+                    &event_tx,
                 );
                 push_platform_input_events(pump.idle(), &mut handoff, trace.as_mut());
+                push_host_input_events(pump.take_host_events(), &event_tx);
             }
             WindowsInputItems::Closed => return,
         }
@@ -72,14 +99,55 @@ pub(super) fn trace_input_transport(value: &str) {
 fn trace_input_transport(_value: &str) {}
 
 #[cfg(windows)]
+fn process_windows_input_records(
+    records: Vec<WindowsInputRecord>,
+    mapper: &mut WindowsInputMapper,
+    pump: &mut WindowsInputPump,
+    handoff: &mut WindowsInputHandoff,
+    mut trace: Option<&mut WindowsInputTraceBatch>,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+) {
+    for record in records {
+        if let (Some(trace), WindowsInputRecord::Key(key)) = (trace.as_deref_mut(), record) {
+            trace.raw_keys.push(key);
+        }
+        process_platform_input_items(
+            mapper.translate(record),
+            pump,
+            handoff,
+            trace.as_deref_mut(),
+            event_tx,
+        );
+    }
+}
+
+#[cfg(windows)]
 fn process_platform_input_items(
     items: Vec<PlatformInputItem>,
     pump: &mut WindowsInputPump,
     handoff: &mut WindowsInputHandoff,
     mut trace: Option<&mut WindowsInputTraceBatch>,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
 ) {
     for item in items {
         push_platform_input_events(pump.process(item), handoff, trace.as_deref_mut());
+        push_host_input_events(pump.take_host_events(), event_tx);
+    }
+}
+
+#[cfg(windows)]
+fn push_host_input_events(
+    events: Vec<crate::raw_input::RawInputEvent>,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+) {
+    if events.is_empty() {
+        return;
+    }
+    if event_tx
+        .try_send(ClientLoopEvent::HostInput(events))
+        .is_err()
+    {
+        tracing::debug!("host terminal input update dropped while client input was backpressured");
     }
 }
 
@@ -116,7 +184,7 @@ pub(super) fn console_input_handle() -> std::io::Result<windows_sys::Win32::Foun
 
 #[cfg(windows)]
 enum WindowsInputItems {
-    Items(Vec<PlatformInputItem>),
+    Items(Vec<WindowsInputRecord>),
     Idle,
     Closed,
 }
@@ -228,8 +296,6 @@ fn windows_mouse_motion_can_replace(
 #[cfg(windows)]
 fn windows_console_input_items(
     handle: windows_sys::Win32::Foundation::HANDLE,
-    mapper: &mut WindowsInputMapper,
-    mut trace: Option<&mut WindowsInputTraceBatch>,
 ) -> WindowsInputItems {
     const WAIT_OBJECT_0: u32 = 0;
     const WAIT_TIMEOUT: u32 = 258;
@@ -240,13 +306,13 @@ fn windows_console_input_items(
         _ => return WindowsInputItems::Closed,
     }
 
-    let mut records = [windows_sys::Win32::System::Console::INPUT_RECORD::default(); 64];
+    let mut input_records = [windows_sys::Win32::System::Console::INPUT_RECORD::default(); 64];
     let mut read = 0;
     let ok = unsafe {
         windows_sys::Win32::System::Console::ReadConsoleInputW(
             handle,
-            records.as_mut_ptr(),
-            records.len() as u32,
+            input_records.as_mut_ptr(),
+            input_records.len() as u32,
             &mut read,
         )
     };
@@ -254,16 +320,13 @@ fn windows_console_input_items(
         return WindowsInputItems::Closed;
     }
 
-    let mut items = Vec::new();
-    for record in records.iter().take(read as usize) {
+    let mut records = Vec::new();
+    for record in input_records.iter().take(read as usize) {
         if let Some(record) = windows_console_input_record_from_os(*record) {
-            if let (Some(trace), WindowsInputRecord::Key(key)) = (trace.as_deref_mut(), record) {
-                trace.raw_keys.push(key);
-            }
-            items.extend(mapper.translate(record));
+            records.push(record);
         }
     }
-    WindowsInputItems::Items(items)
+    WindowsInputItems::Items(records)
 }
 
 #[cfg(windows)]
@@ -310,6 +373,223 @@ enum WindowsInputRecord {
     Focus(bool),
 }
 
+struct WindowsHostCapabilityProbe {
+    query_kitty_graphics: bool,
+    deadline: Instant,
+    records: Vec<WindowsInputRecord>,
+    record_offsets: Vec<Option<usize>>,
+    response: Vec<u8>,
+    consumed_records: Vec<bool>,
+    kitty_graphics: Option<bool>,
+    synchronized_output: Option<bool>,
+}
+
+impl WindowsHostCapabilityProbe {
+    const TIMEOUT: Duration = Duration::from_millis(250);
+    #[cfg(windows)]
+    const SYNC_OUTPUT_QUERY: &[u8] = b"\x1b[?2026$p";
+    #[cfg(windows)]
+    const KITTY_GRAPHICS_QUERY: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
+
+    #[cfg(windows)]
+    fn start(query_kitty_graphics: bool) -> Option<Self> {
+        let mut query = Self::SYNC_OUTPUT_QUERY.to_vec();
+        if query_kitty_graphics {
+            query.extend_from_slice(Self::KITTY_GRAPHICS_QUERY);
+        }
+        if io::stdout()
+            .write_all(&query)
+            .and_then(|()| io::stdout().flush())
+            .is_err()
+        {
+            tracing::debug!("host terminal capability query unavailable");
+            return None;
+        }
+        Some(Self {
+            query_kitty_graphics,
+            deadline: Instant::now() + Self::TIMEOUT,
+            records: Vec::new(),
+            record_offsets: Vec::new(),
+            response: Vec::new(),
+            consumed_records: Vec::new(),
+            kitty_graphics: None,
+            synchronized_output: None,
+        })
+    }
+
+    fn observe(
+        &mut self,
+        records: Vec<WindowsInputRecord>,
+    ) -> Option<(Vec<WindowsInputRecord>, bool, bool)> {
+        for record in records {
+            self.push_record(record);
+        }
+        self.update_responses();
+        self.finish_if_ready(false)
+    }
+
+    fn push_record(&mut self, record: WindowsInputRecord) {
+        let offset = match record {
+            WindowsInputRecord::Key(key)
+                if key.key_down
+                    && key.repeat_count.max(1) == 1
+                    && key.unicode <= u16::from(u8::MAX) =>
+            {
+                let offset = self.response.len();
+                self.response.push(key.unicode as u8);
+                Some(offset)
+            }
+            _ => None,
+        };
+        self.records.push(record);
+        self.record_offsets.push(offset);
+        self.consumed_records.push(false);
+    }
+
+    fn update_responses(&mut self) {
+        if self.synchronized_output.is_none() {
+            if let Some((range, supported)) = synchronized_output_response(&self.response) {
+                self.consume_response_range(range);
+                self.synchronized_output = Some(supported);
+            }
+        }
+        if self.query_kitty_graphics && self.kitty_graphics.is_none() {
+            if let Some((range, supported)) = kitty_graphics_response(&self.response) {
+                self.consume_response_range(range);
+                self.kitty_graphics = Some(supported);
+            }
+        }
+    }
+
+    fn consume_response_range(&mut self, range: std::ops::Range<usize>) {
+        for offset in range {
+            if let Some(index) = self
+                .record_offsets
+                .iter()
+                .position(|record_offset| *record_offset == Some(offset))
+            {
+                self.consumed_records[index] = true;
+            }
+        }
+    }
+
+    fn finish_if_ready(
+        &mut self,
+        timed_out: bool,
+    ) -> Option<(Vec<WindowsInputRecord>, bool, bool)> {
+        let ready = self.synchronized_output.is_some()
+            && (!self.query_kitty_graphics || self.kitty_graphics.is_some());
+        if !ready && !timed_out && Instant::now() < self.deadline {
+            return None;
+        }
+        let records = std::mem::take(&mut self.records)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, record)| (!self.consumed_records[index]).then_some(record))
+            .collect();
+        Some((
+            records,
+            self.kitty_graphics.unwrap_or(false),
+            self.synchronized_output.unwrap_or(false),
+        ))
+    }
+}
+
+fn synchronized_output_response(bytes: &[u8]) -> Option<(std::ops::Range<usize>, bool)> {
+    const PREFIX: &[u8] = b"\x1b[?2026;";
+    let start = bytes
+        .windows(PREFIX.len())
+        .position(|window| window == PREFIX)?;
+    let status_start = start + PREFIX.len();
+    let mut end = status_start;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end == status_start || !bytes[end..].starts_with(b"$y") {
+        return None;
+    }
+    let status = std::str::from_utf8(&bytes[status_start..end])
+        .ok()?
+        .parse::<u8>()
+        .ok()?;
+    Some((start..end + 2, status != 0))
+}
+
+fn kitty_graphics_response(bytes: &[u8]) -> Option<(std::ops::Range<usize>, bool)> {
+    const PREFIX: &[u8] = b"\x1b_G";
+    const SUFFIX: &[u8] = b"\x1b\\";
+    let start = bytes
+        .windows(PREFIX.len())
+        .position(|window| window == PREFIX)?;
+    let body_start = start + PREFIX.len();
+    let relative_end = bytes[body_start..]
+        .windows(SUFFIX.len())
+        .position(|window| window == SUFFIX)?;
+    let end = body_start + relative_end;
+    let body = &bytes[body_start..end];
+    let separator = body.iter().position(|byte| *byte == b';')?;
+    let (params, message) = (&body[..separator], &body[separator + 1..]);
+    let query_id = params
+        .split(|byte| *byte == b',')
+        .any(|parameter| parameter == b"i=31");
+    query_id.then_some((start..end + SUFFIX.len(), message == b"OK"))
+}
+
+#[cfg(windows)]
+fn observe_host_capability_probe(
+    probe: &mut Option<WindowsHostCapabilityProbe>,
+    records: Vec<WindowsInputRecord>,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+) -> Vec<WindowsInputRecord> {
+    let Some(active) = probe.as_mut() else {
+        return records;
+    };
+    let Some((records, kitty_graphics, synchronized_output)) = active.observe(records) else {
+        return Vec::new();
+    };
+    report_host_capabilities(event_tx, kitty_graphics, synchronized_output);
+    *probe = None;
+    records
+}
+
+#[cfg(windows)]
+fn flush_host_capability_probe(
+    probe: &mut Option<WindowsHostCapabilityProbe>,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+    force: bool,
+) -> Vec<WindowsInputRecord> {
+    let Some(active) = probe.as_mut() else {
+        return Vec::new();
+    };
+    let Some((records, kitty_graphics, synchronized_output)) =
+        active.finish_if_ready(force || Instant::now() >= active.deadline)
+    else {
+        return Vec::new();
+    };
+    report_host_capabilities(event_tx, kitty_graphics, synchronized_output);
+    *probe = None;
+    records
+}
+
+#[cfg(windows)]
+fn report_host_capabilities(
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+    kitty_graphics: bool,
+    synchronized_output: bool,
+) {
+    if event_tx
+        .try_send(ClientLoopEvent::HostCapabilities {
+            kitty_graphics,
+            synchronized_output,
+        })
+        .is_err()
+    {
+        tracing::debug!(
+            "host terminal capability report dropped while client input was backpressured"
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct WindowsMouseRecord {
     x: u16,
@@ -329,6 +609,7 @@ struct WindowsInputMapper {
 
 struct WindowsInputPump {
     framer: crate::raw_input::RawInputFramer,
+    host_events: Vec<crate::raw_input::RawInputEvent>,
     paste_from_win32_key_records: bool,
     pending_physical_escape: Option<(crate::protocol::ClientInputEvent, bool)>,
     default_mouse_candidate: DefaultMouseCandidate,
@@ -344,13 +625,31 @@ struct DefaultMouseCandidate {
 
 impl Default for WindowsInputPump {
     fn default() -> Self {
+        Self::new(false, false)
+    }
+}
+
+impl WindowsInputPump {
+    fn new(host_color_query_sent: bool, host_cell_size_query_sent: bool) -> Self {
+        let mut framer = crate::raw_input::RawInputFramer::for_host_input();
+        if host_color_query_sent {
+            framer.host_color_query_sent();
+        }
+        if host_cell_size_query_sent {
+            framer.host_cell_size_query_sent();
+        }
         Self {
-            framer: crate::raw_input::RawInputFramer::for_host_input(),
+            framer,
+            host_events: Vec::new(),
             paste_from_win32_key_records: false,
             pending_physical_escape: None,
             default_mouse_candidate: DefaultMouseCandidate::default(),
             consumed_default_mouse_keys: Vec::new(),
         }
+    }
+
+    fn take_host_events(&mut self) -> Vec<crate::raw_input::RawInputEvent> {
+        std::mem::take(&mut self.host_events)
     }
 }
 
@@ -528,7 +827,10 @@ impl WindowsInputPump {
             && events
                 .iter()
                 .any(|event| matches!(event, crate::raw_input::RawInputEvent::Mouse(_)));
-        let mut output = Self::raw_events_to_client_events(events);
+        let (host_events, input_events): (Vec<_>, Vec<_>) =
+            events.into_iter().partition(is_host_input_event);
+        self.host_events.extend(host_events);
+        let mut output = Self::raw_events_to_client_events(input_events);
         if self.default_mouse_candidate.active && !self.framer.has_pending_default_mouse_sequence()
         {
             self.default_mouse_candidate.active = false;
@@ -586,6 +888,16 @@ impl WindowsInputPump {
             .filter_map(windows_client_input_event_from_raw)
             .collect()
     }
+}
+
+fn is_host_input_event(event: &crate::raw_input::RawInputEvent) -> bool {
+    matches!(
+        event,
+        crate::raw_input::RawInputEvent::HostDefaultColor { .. }
+            | crate::raw_input::RawInputEvent::HostPaletteColors { .. }
+            | crate::raw_input::RawInputEvent::HostColorSchemeChanged(_)
+            | crate::raw_input::RawInputEvent::HostCellSizeReport { .. }
+    )
 }
 
 fn matching_key_index(keys: &[WindowsKeyRecord], record: WindowsKeyRecord) -> Option<usize> {
@@ -1387,6 +1699,19 @@ fn windows_input_trace_enabled() -> bool {
 mod tests {
     use super::*;
 
+    fn host_capability_probe(query_kitty_graphics: bool) -> WindowsHostCapabilityProbe {
+        WindowsHostCapabilityProbe {
+            query_kitty_graphics,
+            deadline: Instant::now() + WindowsHostCapabilityProbe::TIMEOUT,
+            records: Vec::new(),
+            record_offsets: Vec::new(),
+            response: Vec::new(),
+            consumed_records: Vec::new(),
+            kitty_graphics: None,
+            synchronized_output: None,
+        }
+    }
+
     fn key_char(ch: char) -> WindowsInputRecord {
         WindowsInputRecord::Key(WindowsKeyRecord {
             key_down: true,
@@ -1396,6 +1721,92 @@ mod tests {
             unicode: ch as u16,
             control_key_state: 0,
         })
+    }
+
+    #[test]
+    fn synchronized_output_probe_recognizes_dec_mode_reports() {
+        assert_eq!(
+            synchronized_output_response(b"\x1b[?2026;1$y"),
+            Some((0..11, true))
+        );
+        assert_eq!(
+            synchronized_output_response(b"\x1b[?2026;2$y"),
+            Some((0..11, true))
+        );
+        assert_eq!(
+            synchronized_output_response(b"\x1b[?2026;0$y"),
+            Some((0..11, false))
+        );
+        assert_eq!(synchronized_output_response(b"\x1b[?2026;1"), None);
+    }
+
+    #[test]
+    fn kitty_graphics_probe_requires_its_query_id_and_terminator() {
+        assert_eq!(
+            kitty_graphics_response(b"\x1b_Gi=31;OK\x1b\\"),
+            Some((0..12, true))
+        );
+        assert_eq!(
+            kitty_graphics_response(b"\x1b_Gi=31;ERR\x1b\\"),
+            Some((0..13, false))
+        );
+        assert_eq!(kitty_graphics_response(b"\x1b_Gi=32;OK\x1b\\"), None);
+        assert_eq!(kitty_graphics_response(b"\x1b_Gi=31;OK"), None);
+    }
+
+    #[test]
+    fn capability_probe_consumes_only_validated_responses() {
+        let mut probe = host_capability_probe(false);
+        let records = "x\x1b[?2026;1$y".chars().map(key_char).collect::<Vec<_>>();
+
+        let (remaining, kitty_graphics, synchronized_output) =
+            probe.observe(records).expect("complete DECRQM response");
+
+        assert!(!kitty_graphics);
+        assert!(synchronized_output);
+        assert_eq!(remaining.len(), 1);
+        assert!(matches!(
+            remaining.as_slice(),
+            [WindowsInputRecord::Key(WindowsKeyRecord { unicode, .. })] if *unicode == u16::from(b'x')
+        ));
+    }
+
+    #[test]
+    fn host_color_reply_reaches_the_host_event_channel_not_the_pane() {
+        let mut pump = WindowsInputPump::new(true, false);
+
+        let pane_events = pump.process(PlatformInputItem::Bytes(b"\x1b]11;#123456\x1b\\".to_vec()));
+        let host_events = pump.take_host_events();
+
+        assert!(pane_events.is_empty());
+        assert!(matches!(
+            host_events.as_slice(),
+            [crate::raw_input::RawInputEvent::HostDefaultColor {
+                kind: crate::terminal_theme::DefaultColorKind::Background,
+                color
+            }] if *color == crate::terminal_theme::RgbColor {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56
+            }
+        ));
+    }
+
+    #[test]
+    fn host_cell_size_reply_reaches_the_host_event_channel_not_the_pane() {
+        let mut pump = WindowsInputPump::new(false, true);
+
+        let pane_events = pump.process(PlatformInputItem::Bytes(b"\x1b[6;180;90t".to_vec()));
+        let host_events = pump.take_host_events();
+
+        assert!(pane_events.is_empty());
+        assert!(matches!(
+            host_events.as_slice(),
+            [crate::raw_input::RawInputEvent::HostCellSizeReport {
+                width_px: 90,
+                height_px: 180
+            }]
+        ));
     }
 
     fn key_vk(vk: u16, control_key_state: u32) -> WindowsInputRecord {

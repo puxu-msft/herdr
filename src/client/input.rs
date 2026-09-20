@@ -44,21 +44,25 @@ pub fn stdin_reader_loop(
     host_sgr_pixels_active: Arc<AtomicBool>,
     host_escape_disambiguation_active: bool,
     initial_host_input: Vec<u8>,
+    host_capability_probe_kitty_graphics: bool,
     #[cfg(unix)] direct_response: Arc<std::sync::Mutex<super::direct_graphics::ResponseMatcher>>,
     #[cfg(unix)] direct_response_active: Arc<AtomicBool>,
 ) {
     #[cfg(windows)]
     {
-        let _ = (
+        let _ = (host_mouse_capture_active, host_sgr_pixels_active);
+        let _ = (host_escape_disambiguation_active, initial_host_input);
+        windows_stdin_reader_loop(
+            event_tx,
+            should_quit,
+            host_capability_probe_kitty_graphics,
             host_color_query_sent,
             host_cell_size_query_sent,
-            host_mouse_capture_active,
-            host_sgr_pixels_active,
         );
-        let _ = (host_escape_disambiguation_active, initial_host_input);
-        windows_stdin_reader_loop(event_tx, should_quit);
     }
 
+    #[cfg(unix)]
+    let _ = host_capability_probe_kitty_graphics;
     #[cfg(unix)]
     unix_stdin_reader_loop(
         event_tx,
@@ -384,19 +388,39 @@ fn idle_flush_timeout_ms(
 fn windows_stdin_reader_loop(
     event_tx: mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
+    host_capability_probe_kitty_graphics: bool,
+    host_color_query_sent: bool,
+    host_cell_size_query_sent: bool,
 ) {
     if !super::windows_vti_input_backend_enabled() {
         windows_vti::trace_input_transport("reader=crossterm");
-        windows_crossterm_reader_loop(event_tx, should_quit);
+        windows_crossterm_reader_loop(
+            event_tx,
+            should_quit,
+            host_color_query_sent,
+            host_cell_size_query_sent,
+        );
     } else {
         match windows_vti::console_input_handle() {
             Ok(handle) => {
                 windows_vti::trace_input_transport("reader=windows-console");
-                windows_vti::raw_console_reader_loop(handle, event_tx, should_quit);
+                windows_vti::raw_console_reader_loop(
+                    handle,
+                    event_tx,
+                    should_quit,
+                    host_capability_probe_kitty_graphics,
+                    host_color_query_sent,
+                    host_cell_size_query_sent,
+                );
             }
             _ => {
                 windows_vti::trace_input_transport("reader=crossterm-fallback");
-                windows_crossterm_reader_loop(event_tx, should_quit);
+                windows_crossterm_reader_loop(
+                    event_tx,
+                    should_quit,
+                    host_color_query_sent,
+                    host_cell_size_query_sent,
+                );
             }
         }
     }
@@ -406,8 +430,16 @@ fn windows_stdin_reader_loop(
 fn windows_crossterm_reader_loop(
     event_tx: mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
+    host_color_query_sent: bool,
+    host_cell_size_query_sent: bool,
 ) {
     let mut framer = crate::raw_input::RawInputFramer::for_host_input();
+    if host_color_query_sent {
+        framer.host_color_query_sent();
+    }
+    if host_cell_size_query_sent {
+        framer.host_cell_size_query_sent();
+    }
 
     while !should_quit.load(Ordering::Acquire) {
         match crossterm::event::poll(Duration::from_millis(10)) {
@@ -572,7 +604,16 @@ fn send_windows_raw_events(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
 ) -> bool {
     let raw_event_count = events.len();
-    let events = events
+    let (host_events, input_events): (Vec<_>, Vec<_>) =
+        events.into_iter().partition(is_windows_host_input_event);
+    if !host_events.is_empty()
+        && event_tx
+            .try_send(ClientLoopEvent::HostInput(host_events))
+            .is_err()
+    {
+        tracing::debug!("host terminal input update dropped while client input was backpressured");
+    }
+    let events = input_events
         .into_iter()
         .filter_map(windows_client_input_event_from_raw)
         .collect::<Vec<_>>();
@@ -588,6 +629,17 @@ fn send_windows_raw_events(
     event_tx
         .blocking_send(ClientLoopEvent::StdinEvents(events))
         .is_ok()
+}
+
+#[cfg(windows)]
+fn is_windows_host_input_event(event: &crate::raw_input::RawInputEvent) -> bool {
+    matches!(
+        event,
+        crate::raw_input::RawInputEvent::HostDefaultColor { .. }
+            | crate::raw_input::RawInputEvent::HostPaletteColors { .. }
+            | crate::raw_input::RawInputEvent::HostColorSchemeChanged(_)
+            | crate::raw_input::RawInputEvent::HostCellSizeReport { .. }
+    )
 }
 
 #[cfg(any(windows, test))]

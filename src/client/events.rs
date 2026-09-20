@@ -10,6 +10,13 @@ pub(super) enum ClientLoopEvent {
     DirectGraphicsResponse(direct_graphics::Response),
     #[cfg(windows)]
     StdinEvents(Vec<crate::protocol::ClientInputEvent>),
+    #[cfg(windows)]
+    HostInput(Vec<crate::raw_input::RawInputEvent>),
+    #[cfg(windows)]
+    HostCapabilities {
+        kitty_graphics: bool,
+        synchronized_output: bool,
+    },
     Resize(u16, u16, u32, u32, bool),
     TerminalUnavailable(io::Error),
     ServerMessage {

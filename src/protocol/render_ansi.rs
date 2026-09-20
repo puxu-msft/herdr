@@ -55,16 +55,44 @@ pub(crate) struct EncodedBlit {
 }
 
 /// Stateful encoder that diffs semantic frames into terminal ANSI bytes.
-#[derive(Default)]
 pub(crate) struct BlitEncoder {
     last_frame: Option<FrameData>,
     last_visible_cursor: Option<(u16, u16)>,
     last_cursor_shape: u8,
+    synchronized_output: bool,
+}
+
+impl Default for BlitEncoder {
+    fn default() -> Self {
+        Self {
+            last_frame: None,
+            last_visible_cursor: None,
+            last_cursor_shape: 0,
+            synchronized_output: true,
+        }
+    }
 }
 
 impl BlitEncoder {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn new_with_synchronized_output(synchronized_output: bool) -> Self {
+        Self {
+            synchronized_output,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn set_synchronized_output(&mut self, synchronized_output: bool) -> bool {
+        if self.synchronized_output == synchronized_output {
+            return false;
+        }
+        self.synchronized_output = synchronized_output;
+        self.last_frame = None;
+        true
     }
 
     pub(crate) fn encode(&self, frame: &FrameData, repaint: bool) -> EncodedBlit {
@@ -103,6 +131,7 @@ impl BlitEncoder {
             prev,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
+            self.synchronized_output,
             repeat_ime_anchor_after_sync(),
             clear_before_full_redraw,
             suppress_visible_cursor,
@@ -157,6 +186,7 @@ impl BlitEncoder {
             cursor,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
+            self.synchronized_output,
             repeat_ime_anchor_after_sync(),
             suppress_visible_cursor,
         );
@@ -532,6 +562,7 @@ fn blit_frame_to_with_cursor_memory_and_policy(
         prev,
         last_visible_cursor,
         last_cursor_shape,
+        true,
         repeat_ime_anchor,
         true,
         suppress_visible_cursor,
@@ -590,10 +621,14 @@ fn blit_patch_to(
     cursor: Option<CursorState>,
     last_visible_cursor: &mut Option<(u16, u16)>,
     last_cursor_shape: &mut u8,
+    synchronized_output: bool,
     repeat_ime_anchor: bool,
     suppress_visible_cursor: bool,
 ) {
-    let _ = writer.write_all(b"\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\");
+    if synchronized_output {
+        let _ = writer.write_all(b"\x1b[?2026h");
+    }
+    let _ = writer.write_all(b"\x1b[?25l\x1b]8;;\x1b\\");
     let mut last_sgr = String::new();
     let mut active_hyperlink = None;
     for row in rows {
@@ -641,8 +676,10 @@ fn blit_patch_to(
         host_cursor.visible = false;
     }
     write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape);
-    let _ = writer.write_all(b"\x1b[?2026l");
-    if repeat_ime_anchor {
+    if synchronized_output {
+        let _ = writer.write_all(b"\x1b[?2026l");
+    }
+    if synchronized_output && repeat_ime_anchor {
         write_ime_anchor_cursor_state(&mut writer, host_cursor);
     }
     let _ = writer.flush();
@@ -654,6 +691,7 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     prev: Option<&FrameData>,
     last_visible_cursor: &mut Option<(u16, u16)>,
     last_cursor_shape: &mut u8,
+    synchronized_output: bool,
     repeat_ime_anchor: bool,
     clear_before_full_redraw: bool,
     suppress_visible_cursor: bool,
@@ -662,10 +700,12 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     let full_redraw =
         prev.is_none() || prev.is_some_and(|p| p.width != frame.width || p.height != frame.height);
 
-    // Ask terminals that support synchronized output to apply the whole frame
-    // atomically. This keeps IMEs and cursor trackers from observing the
+    // Ask terminals that advertise synchronized output to apply the whole
+    // frame atomically. This keeps IMEs and cursor trackers from observing the
     // intermediate CUP positions used while painting changed cells.
-    let _ = writer.write_all(b"\x1b[?2026h");
+    if synchronized_output {
+        let _ = writer.write_all(b"\x1b[?2026h");
+    }
 
     // Hide cursor before any cell writes to avoid stray cursor artifacts
     // on terminals that render the hardware cursor at intermediate CUP positions.
@@ -701,14 +741,16 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
 
     // End the synchronized output block immediately after the final cursor
     // state is emitted so supporting terminals can present the frame atomically.
-    let _ = writer.write_all(b"\x1b[?2026l");
+    if synchronized_output {
+        let _ = writer.write_all(b"\x1b[?2026l");
+    }
 
     // Some native IMEs track candidate-window placement from normal terminal
     // cursor updates and may not observe cursor moves emitted inside synchronized
     // output. Re-emit only the resolved final cursor anchor after the sync block
     // on targets that need it; Windows Terminal exposes that repeat as cursor
     // movement during active TUI repaints.
-    if repeat_ime_anchor {
+    if synchronized_output && repeat_ime_anchor {
         write_ime_anchor_cursor_state(&mut writer, host_cursor);
     }
     let _ = writer.flush();
@@ -1394,6 +1436,21 @@ mod tests {
         assert_eq!(
             trailing_cursor, "",
             "should not expose a post-sync cursor repeat when the target terminal flickers on it"
+        );
+    }
+
+    #[test]
+    fn blit_encoder_can_omit_unnegotiated_synchronized_output() {
+        let frame = make_frame(1, 1, vec![make_cell("A", 0, 0, 0)]);
+
+        let encoded = BlitEncoder::new_with_synchronized_output(false).encode(&frame, false);
+        let output = String::from_utf8(encoded.bytes).unwrap();
+
+        assert!(!output.contains("\x1b[?2026h"));
+        assert!(!output.contains("\x1b[?2026l"));
+        assert!(
+            output.starts_with("\x1b[?25l"),
+            "cursor safety must remain active without synchronized output"
         );
     }
 

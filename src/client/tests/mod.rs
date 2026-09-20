@@ -438,7 +438,7 @@ fn write_host_cell_size_query_emits_xtwinops_request() {
 
 #[test]
 fn host_cell_size_query_is_disabled_on_windows() {
-    assert_eq!(should_query_host_cell_size(), !cfg!(windows));
+    assert!(should_query_host_cell_size());
 }
 
 #[test]

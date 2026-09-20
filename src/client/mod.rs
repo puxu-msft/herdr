@@ -25,6 +25,7 @@ mod errors;
 mod events;
 mod frame_output;
 mod handshake;
+mod host_capabilities;
 mod input;
 mod loop_config;
 mod notifications;
@@ -65,10 +66,9 @@ use terminal_geometry::{
 };
 use terminal_geometry::{
     host_cell_size_query_required, initial_terminal_geometry, query_host_cell_size,
-    query_host_terminal_theme, resize_poll_loop, should_query_host_terminal_theme,
+    query_host_terminal_theme, reported_cell_size_from_events, resize_poll_loop,
+    should_query_host_terminal_theme, store_reported_cell_size,
 };
-#[cfg(unix)]
-use terminal_geometry::{reported_cell_size_from_events, store_reported_cell_size};
 use terminal_setup::{
     effective_mouse_capture, effective_sgr_pixel_mouse, set_mouse_capture,
     setup_direct_attach_terminal, setup_terminal, should_draw_host_cursor, TerminalGuard,
@@ -114,6 +114,7 @@ use handshake::{client_shell_keybinding_source, do_handshake, is_remote_client_p
 use handshake::{
     direct_graphics_profile_values, handshake_read_timeout, REMOTE_HANDSHAKE_READ_TIMEOUT,
 };
+use host_capabilities::HostTerminalCapabilities;
 use notifications::{handle_notify, handle_shell_notification_effects};
 #[cfg(test)]
 use notifications::{handle_notify_with_notifiers, sound_from_notify_message};
@@ -174,9 +175,18 @@ fn run_client_with_mode(
     let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
     let host_cursor = loaded_config.config.ui.host_cursor;
     let remote_image_paste_key = client_remote_image_paste_key(&loaded_config.config);
-    let kitty_graphics_enabled =
+    let host_capabilities = HostTerminalCapabilities::initial();
+    let kitty_graphics_requested =
         loaded_config.config.kitty_graphics_enabled() && client_rendered_shell;
-    let pixel_geometry_enabled = kitty_graphics_enabled || attach_escape.is_some();
+    let kitty_graphics_enabled = kitty_graphics_requested && host_capabilities.kitty_graphics;
+    #[cfg(windows)]
+    if kitty_graphics_requested {
+        info!("waiting for outer-terminal capability negotiation before enabling Kitty graphics");
+    }
+    // Pixel geometry is passive host metadata. Collect it before the Windows
+    // capability probe completes so a later Kitty-graphics enable does not
+    // require reconnecting the endpoint with guessed cell dimensions.
+    let pixel_geometry_enabled = kitty_graphics_requested || attach_escape.is_some();
     let endpoint_keybindings = shell_config
         .as_ref()
         .is_some_and(shell::ClientShellConfig::uses_endpoint_keybindings);
@@ -186,8 +196,10 @@ fn run_client_with_mode(
         redraw_on_focus_gained,
         host_cursor,
         kitty_graphics_enabled,
+        kitty_graphics_requested,
+        synchronized_output: host_capabilities.synchronized_output,
         pixel_geometry_enabled,
-        pixel_geometry_fallback: kitty_graphics_enabled,
+        pixel_geometry_fallback: kitty_graphics_requested,
         mouse_capture_active: mouse_capture,
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
@@ -391,7 +403,9 @@ async fn run_client_loop(
     let local_unavailable = initial.is_none();
 
     let mut state = ClientState {
-        blit_encoder: render_ansi::BlitEncoder::new(),
+        blit_encoder: render_ansi::BlitEncoder::new_with_synchronized_output(
+            config.synchronized_output,
+        ),
         mouse_capture_active: config.mouse_capture_active,
         endpoint_mouse_capture_requested: false,
         endpoint_sgr_pixels_requested: false,
@@ -472,17 +486,24 @@ async fn run_client_loop(
     let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
 
     // Spawn the stdin reader thread.
-    let will_query_host_terminal_theme =
-        state.attach_escape.is_none() && should_query_host_terminal_theme();
+    #[cfg(windows)]
+    let host_protocol_queries = windows_vti_input_backend_enabled();
+    #[cfg(not(windows))]
+    let host_protocol_queries = true;
+    let will_query_host_terminal_theme = host_protocol_queries
+        && state.attach_escape.is_none()
+        && (should_query_host_terminal_theme() || cfg!(windows));
     // Terminals behind ConPTY report no pixel size through the ioctl, so ask the
     // host terminal directly instead of falling back to an assumed cell size.
-    let will_query_host_cell_size = state.attach_escape.is_none()
-        && host_cell_size_query_required(state.kitty_graphics_enabled);
+    let will_query_host_cell_size = host_protocol_queries
+        && state.attach_escape.is_none()
+        && host_cell_size_query_required(config.kitty_graphics_requested);
     let stdin_quit = should_quit.clone();
     let stdin_mouse_capture_active = host_mouse_capture_active.clone();
     let stdin_sgr_pixels_active = host_sgr_pixels_active.clone();
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
+    let stdin_host_capability_probe_kitty_graphics = config.kitty_graphics_requested;
     #[cfg(unix)]
     let stdin_direct_response = state.direct_graphics_response.clone();
     #[cfg(unix)]
@@ -500,6 +521,7 @@ async fn run_client_loop(
             stdin_sgr_pixels_active,
             stdin_escape_disambiguation_active,
             stdin_initial_host_input,
+            stdin_host_capability_probe_kitty_graphics,
             #[cfg(unix)]
             stdin_direct_response,
             #[cfg(unix)]
@@ -541,7 +563,7 @@ async fn run_client_loop(
     });
 
     let mut write_stream = if let Some((stream, handshake)) = initial {
-        let max_frame_size = if state.kitty_graphics_enabled {
+        let max_frame_size = if config.kitty_graphics_requested {
             MAX_GRAPHICS_FRAME_SIZE
         } else {
             crate::protocol::MAX_FRAME_SIZE
@@ -1105,6 +1127,56 @@ async fn run_client_loop(
                     continue;
                 }
                 // Direct terminal attach is Unix-only; every Windows client uses ClientShell.
+            }
+            #[cfg(windows)]
+            ClientLoopEvent::HostInput(events) => {
+                if let Some((width_px, height_px)) = reported_cell_size_from_events(&events) {
+                    store_reported_cell_size(&reported_cell_size, width_px, height_px);
+                    state.reported_cell_size = (width_px, height_px);
+                    if let Some(shell) = state.shell.as_mut() {
+                        shell.set_graphics_cell_size(width_px, height_px);
+                    }
+                }
+                if let Some(shell) = state.shell.as_mut() {
+                    let outcome = shell.handle_raw_events(events);
+                    let frame = outcome
+                        .repaint
+                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                        .flatten();
+                    if finish_client_shell_input(
+                        &mut state,
+                        outcome,
+                        frame,
+                        &mut write_stream,
+                        &mut pending_activation,
+                        &mut endpoint_commands,
+                        &mut prefix_input_source,
+                        &mut scheduled_activation,
+                    )? {
+                        return Ok(());
+                    }
+                }
+            }
+            #[cfg(windows)]
+            ClientLoopEvent::HostCapabilities {
+                kitty_graphics,
+                synchronized_output,
+            } => {
+                let changed = state.apply_host_capabilities(
+                    config.kitty_graphics_requested && kitty_graphics,
+                    synchronized_output,
+                );
+                if changed {
+                    info!(
+                        kitty_graphics = state.kitty_graphics_enabled,
+                        synchronized_output, "outer-terminal capability negotiation completed"
+                    );
+                    if let Some(frame) = state.shell.as_mut().and_then(|shell| {
+                        shell.compose(state.reported_size.0, state.reported_size.1)
+                    }) {
+                        state.present_frame(frame);
+                    }
+                }
             }
             ClientLoopEvent::TerminalUnavailable(err) => {
                 info!(err = %err, "client terminal unavailable; detaching");

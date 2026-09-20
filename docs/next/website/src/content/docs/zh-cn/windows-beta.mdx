@@ -82,7 +82,11 @@ switch_ascii_input_source_in_prefix = true
 
 Windows 上的部分智能体可以接收 `ctrl+v` 并直接读取剪贴板图像。Herdr 自己的剪贴板图像读取器尚未接入本地原生 Windows 窗格,因此智能体原生图像粘贴仍取决于终端和智能体。`alt+v` 等智能体图像粘贴快捷键不会增加由 Herdr 管理的本地剪贴板桥。远程剪贴板图像桥通过连接 Linux/macOS/Windows 主机的 `herdr --remote` 单独受支持。
 
-Kitty graphics 默认启用，并取决于外层终端。Herdr 会像在其他平台上一样在 Windows 上输出 Kitty graphics protocol。这个路径已在 Windows WezTerm 托管 WSL 中 Herdr 的配置下得到验证，但原生 Windows 的各种终端与 ConPTY 组合尚未全部验证。Windows Terminal 不提供 Herdr 使用的 Kitty graphics 路径。如果外层终端无法正确处理图形输出，请设置 `[terminal].kitty_graphics = false`。
+Kitty graphics 默认是“请求启用”，但 Herdr 只会在外层终端成功回答运行时能力查询后，才会在 Windows 上真正启用它。在协商成功之前，Herdr 不会输出 Kitty graphics protocol。Windows Terminal 不声明 Herdr 所使用的 Kitty graphics 路径，因此其中的图形会保持禁用；WezTerm 等兼容终端可在查询成功后启用。设置 `[terminal].kitty_graphics = false` 可完全关闭图形。
+
+Herdr 也会在使用 synchronized output 划定重绘边界前进行协商。终端若未回答模式查询，便继续使用普通的“隐藏光标后重绘”路径，不会收到未协商的 `CSI ? 2026 h/l` 序列。
+
+当 Windows 输入后端能够接收 VT 回复时，Herdr 还会查询标准 OSC 默认前景色/背景色及 XTWINOPS 单元尺寸。有效回复会更新客户端主题和图像几何；不支持的终端则保持现有默认值不变。
 
 ## 已知注意事项
 

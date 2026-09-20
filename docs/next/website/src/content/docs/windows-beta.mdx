@@ -82,7 +82,11 @@ Other Windows IMEs are not supported by this option yet. See [Configuration](/do
 
 Some Windows agents can receive `ctrl+v` and read clipboard images directly. Herdr's own clipboard-image reader is not wired into local native Windows panes, so agent-native image paste remains dependent on the terminal and agent. Agent image-paste shortcuts such as `alt+v` do not add a Herdr-managed local clipboard bridge. Remote clipboard image bridging is supported separately through `herdr --remote` to Linux, macOS, and Windows hosts.
 
-Kitty graphics is enabled by default and depends on the outer terminal. Herdr emits Kitty graphics protocol output on Windows as it does on other platforms. This path has been exercised with Windows WezTerm hosting Herdr through WSL, but native Windows terminal and ConPTY combinations are not all verified. Windows Terminal does not expose the Kitty graphics path Herdr uses. Set `[terminal].kitty_graphics = false` if the outer terminal mishandles graphics output.
+Kitty graphics is requested by default, but Herdr enables it on Windows only after the outer terminal answers its runtime capability query. Until that negotiation succeeds, Herdr emits no Kitty graphics protocol output. Windows Terminal does not advertise the Kitty graphics path Herdr uses, so graphics remain disabled there; compatible terminals such as WezTerm can enable them after a successful query. Set `[terminal].kitty_graphics = false` to disable graphics entirely.
+
+Herdr also negotiates synchronized output before using it to delimit redraws. A terminal that does not answer the mode query keeps the ordinary cursor-hidden redraw path without unadvertised `CSI ? 2026 h/l` sequences.
+
+When the Windows input backend can receive VT replies, Herdr also queries standard OSC default foreground/background colors and the XTWINOPS cell size. Valid replies update the client theme and image geometry; unsupported terminals simply leave the existing defaults unchanged.
 
 ## Known caveats
 
