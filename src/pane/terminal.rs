@@ -3359,11 +3359,13 @@ fn default_color_query_response(
         DefaultColorQuery::Foreground if !core.child_default_foreground_changed => core
             .host_terminal_theme
             .foreground
-            .map(host_theme_color_to_ghostty),
+            .map(host_theme_color_to_ghostty)
+            .or_else(|| effective_default_color(core, query)),
         DefaultColorQuery::Background if !core.child_default_background_changed => core
             .host_terminal_theme
             .background
-            .map(host_theme_color_to_ghostty),
+            .map(host_theme_color_to_ghostty)
+            .or_else(|| effective_default_color(core, query)),
         DefaultColorQuery::Cursor => cursor_color_query_color(core),
         _ => None,
     }?;
@@ -3373,6 +3375,24 @@ fn default_color_query_response(
         color.g,
         color.b,
     ))
+}
+
+fn effective_default_color(
+    core: &mut GhosttyPaneCore,
+    query: DefaultColorQuery,
+) -> Option<crate::ghostty::RgbColor> {
+    let GhosttyPaneCore {
+        terminal,
+        render_state,
+        ..
+    } = core;
+    render_state.update(terminal).ok()?;
+    let colors = render_state.colors().ok()?;
+    match query {
+        DefaultColorQuery::Foreground => Some(colors.foreground),
+        DefaultColorQuery::Background => Some(colors.background),
+        DefaultColorQuery::Cursor => None,
+    }
 }
 
 fn cursor_color_query_color(core: &mut GhosttyPaneCore) -> Option<crate::ghostty::RgbColor> {
@@ -7071,6 +7091,36 @@ mod tests {
                 Bytes::from_static(b"\x1b]10;rgb:6565/7b7b/8383\x1b\\"),
                 Bytes::from_static(b"\x1b]11;rgb:fdfd/f6f6/e3e3\x1b\\"),
                 Bytes::from_static(b"\x1b]12;rgb:6565/7b7b/8383\x1b\\"),
+            ]
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn process_pty_bytes_falls_back_to_effective_defaults_without_host_theme() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+        let (foreground, background) = {
+            let mut core = pane.core.lock().unwrap();
+            let GhosttyPaneCore {
+                terminal,
+                render_state,
+                ..
+            } = &mut *core;
+            render_state.update(terminal).unwrap();
+            let colors = render_state.colors().unwrap();
+            (colors.foreground, colors.background)
+        };
+
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?\x07\x1b]11;?\x07", &tx);
+
+        assert_eq!(
+            result.terminal_responses,
+            vec![
+                osc_rgb_response("10", foreground.r, foreground.g, foreground.b),
+                osc_rgb_response("11", background.r, background.g, background.b),
             ]
         );
         assert!(rx.try_recv().is_err());
