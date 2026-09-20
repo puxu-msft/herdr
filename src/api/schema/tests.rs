@@ -305,6 +305,70 @@ fn integration_list_request_and_response_round_trip() {
 }
 
 #[test]
+fn plugin_integration_list_request_and_response_round_trip() {
+    let request = Request {
+        id: "req_plugin_integrations".into(),
+        method: Method::IntegrationProviderList(EmptyParams::default()),
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "integration.provider.list");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), request);
+
+    let response = SuccessResponse {
+        id: "req_plugin_integrations".into(),
+        result: ResponseResult::IntegrationProviderList {
+            integrations: vec![PluginIntegrationInfo {
+                provider_id: "example.agent-manager.claude".into(),
+                plugin_id: "example.agent-manager".into(),
+                integration_id: "claude".into(),
+                label: "Managed Claude".into(),
+                available: true,
+                state: IntegrationState::Current,
+                status_file: "/state/plugins/example/integrations/claude.json".into(),
+                message: Some("shared hooks are active".into()),
+                supports_install: true,
+                supports_uninstall: true,
+            }],
+        },
+    };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["result"]["type"], "integration_provider_list");
+    assert_eq!(json["result"]["integrations"][0]["state"], "current");
+    assert_eq!(
+        serde_json::from_value::<SuccessResponse>(json).unwrap(),
+        response
+    );
+}
+
+#[test]
+fn plugin_integration_install_request_and_response_round_trip() {
+    let request = Request {
+        id: "req_plugin_integration_install".into(),
+        method: Method::IntegrationProviderInstall(PluginIntegrationOperationParams {
+            provider_id: "example.agent-manager.claude".into(),
+        }),
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "integration.provider.install");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), request);
+
+    let response = SuccessResponse {
+        id: "req_plugin_integration_install".into(),
+        result: ResponseResult::IntegrationProviderInstall {
+            provider_id: "example.agent-manager.claude".into(),
+            details: IntegrationInstallResult {
+                messages: vec!["Managed Claude install completed".into()],
+            },
+        },
+    };
+    assert_eq!(
+        serde_json::from_value::<SuccessResponse>(serde_json::to_value(&response).unwrap())
+            .unwrap(),
+        response
+    );
+}
+
+#[test]
 fn command_invoke_request_round_trips_without_command_text() {
     let request = Request {
         id: "req_command".into(),
@@ -1012,6 +1076,7 @@ fn plugin_link_list_unlink_round_trip() {
             platforms: None,
             command: vec!["bun".into(), "run".into(), "bootstrap.ts".into()],
         }],
+        integrations: vec![],
         panes: vec![PluginManifestPane {
             id: "board".into(),
             title: "Board".into(),

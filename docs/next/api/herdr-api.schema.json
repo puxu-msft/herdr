@@ -3522,6 +3522,17 @@
           },
           "type": "object"
         },
+        "PluginIntegrationOperationParams": {
+          "properties": {
+            "provider_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider_id"
+          ],
+          "type": "object"
+        },
         "PluginInvocationContext": {
           "properties": {
             "clicked_url": {
@@ -6238,6 +6249,54 @@
         {
           "properties": {
             "method": {
+              "const": "integration.provider.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "integration.provider.install",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PluginIntegrationOperationParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "integration.provider.uninstall",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PluginIntegrationOperationParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "plugin.link",
               "type": "string"
             },
@@ -7603,6 +7662,12 @@
               },
               "type": "array"
             },
+            "integrations": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/PluginManifestIntegration"
+              },
+              "type": "array"
+            },
             "link_handlers": {
               "items": {
                 "$ref": "#/schemas/success_response/$defs/PluginManifestLinkHandler"
@@ -8808,6 +8873,56 @@
           ],
           "type": "string"
         },
+        "PluginIntegrationInfo": {
+          "description": "A plugin-owned integration provider. Its `provider_id` is globally stable\nand is accepted by `herdr integration install` and `uninstall`.",
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "integration_id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "plugin_id": {
+              "type": "string"
+            },
+            "provider_id": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/IntegrationState"
+            },
+            "status_file": {
+              "type": "string"
+            },
+            "supports_install": {
+              "type": "boolean"
+            },
+            "supports_uninstall": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "provider_id",
+            "plugin_id",
+            "integration_id",
+            "label",
+            "available",
+            "state",
+            "status_file",
+            "supports_install",
+            "supports_uninstall"
+          ],
+          "type": "object"
+        },
         "PluginInvocationContext": {
           "properties": {
             "clicked_url": {
@@ -9001,6 +9116,51 @@
           "required": [
             "on",
             "command"
+          ],
+          "type": "object"
+        },
+        "PluginManifestIntegration": {
+          "properties": {
+            "available": {
+              "default": false,
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "install": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "label": {
+              "type": "string"
+            },
+            "platforms": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/PluginPlatform"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "status_file": {
+              "description": "Relative to `HERDR_PLUGIN_STATE_DIR`. The file contains the current\nprovider status as JSON and is owned by the plugin.",
+              "type": "string"
+            },
+            "uninstall": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "status_file"
           ],
           "type": "object"
         },
@@ -10249,6 +10409,65 @@
               "required": [
                 "type",
                 "target",
+                "details"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "integrations": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/PluginIntegrationInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "integration_provider_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "integrations"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "details": {
+                  "$ref": "#/schemas/success_response/$defs/IntegrationInstallResult"
+                },
+                "provider_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "integration_provider_install",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "provider_id",
+                "details"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "details": {
+                  "$ref": "#/schemas/success_response/$defs/IntegrationUninstallResult"
+                },
+                "provider_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "integration_provider_uninstall",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "provider_id",
                 "details"
               ],
               "type": "object"

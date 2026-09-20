@@ -66,6 +66,48 @@ Herdr uses integrations in two ways:
 
 Custom integrations can also report state that is not visible in the native terminal UI. They do not need to be built into Herdr or use a recognized agent executable.
 
+## Plugin-managed integrations
+
+Plugins can provide centrally managed integrations without adding a new built-in
+target. Declare one or more `[[integrations]]` entries in
+`herdr-plugin.toml`; each entry has a plugin-local id, display label, optional
+install and uninstall argv commands, and a `status_file` relative to
+`HERDR_PLUGIN_STATE_DIR`.
+
+```toml
+[[integrations]]
+id = "claude"
+label = "Managed Claude Code"
+status_file = "integrations/claude.json"
+available = true
+install = ["node", "bin/manage.js", "install", "claude"]
+uninstall = ["node", "bin/manage.js", "uninstall", "claude"]
+```
+
+The plugin owns the status file and writes structured JSON such as:
+
+```json
+{"state":"current","available":true,"message":"shared hooks are active"}
+```
+
+`state` is `not_installed`, `current`, or `outdated`; `available` and
+`message` are optional. Herdr lists enabled providers in Settings and in
+`herdr integration status`; Settings installs every available or outdated
+provider that declares an install command. Install or remove one with its
+qualified provider id:
+
+```bash
+herdr integration install example.agent-manager.claude
+herdr integration uninstall example.agent-manager.claude
+```
+
+Herdr invokes those commands directly as argv from the plugin root, never
+through a shell. They receive the normal plugin root, config, state, socket,
+and binary environment variables plus `HERDR_PLUGIN_INTEGRATION_ID`,
+`HERDR_PLUGIN_INTEGRATION_PROVIDER_ID`, and
+`HERDR_PLUGIN_INTEGRATION_OPERATION`. Plugin-managed providers do not alter
+the fixed built-in integration targets or their compatibility contract.
+
 ## Integrate your own agent
 
 An agent running in a Herdr pane inherits `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_BIN_PATH`, and `HERDR_SOCKET_PATH`. If the agent exposes lifecycle hooks, use those hooks to report semantic state through Herdr's CLI:

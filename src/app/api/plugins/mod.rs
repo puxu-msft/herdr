@@ -1170,6 +1170,58 @@ command = ["awk", "-F", "\t", " {print $1} "]
     }
 
     #[test]
+    fn plugin_manifest_loads_integration_providers_and_rejects_unsafe_status_paths() {
+        let root = unique_temp_path("plugin-integration-provider");
+        write_manifest_content(
+            &root,
+            r#"
+id = "example.agent-manager"
+name = "Agent Manager"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+
+[[integrations]]
+id = "claude"
+label = "Managed Claude"
+status_file = "integrations/claude.json"
+available = true
+install = ["node", "manager.js", "install", "claude"]
+uninstall = ["node", "manager.js", "uninstall", "claude"]
+"#,
+        );
+
+        let plugin = load_plugin_manifest(&root.display().to_string(), true).unwrap();
+        assert_eq!(plugin.integrations.len(), 1);
+        assert_eq!(plugin.integrations[0].id, "claude");
+        assert_eq!(
+            plugin.integrations[0].install,
+            ["node", "manager.js", "install", "claude"]
+        );
+        assert!(plugin.integrations[0].available);
+
+        write_manifest_content(
+            &root,
+            r#"
+id = "example.agent-manager"
+name = "Agent Manager"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+
+[[integrations]]
+id = "claude"
+label = "Managed Claude"
+status_file = "../claude.json"
+"#,
+        );
+        assert!(matches!(
+            load_plugin_manifest(&root.display().to_string(), true),
+            Err(("invalid_plugin_integration_status_file", _))
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn plugin_manifest_rejects_empty_command_elements() {
         for (name, command) in [("array", "[]"), ("element", r#"["echo", ""]"#)] {
             let root = unique_temp_path(&format!("plugin-empty-command-{name}"));

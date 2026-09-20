@@ -58,6 +58,18 @@ fn integration_status(args: &[String]) -> std::io::Result<i32> {
             status.path.display()
         );
     }
+    for status in crate::integration::plugin_integration_infos() {
+        let state = describe_plugin_integration_state(status.state, status.available);
+        let message = status
+            .message
+            .as_deref()
+            .map(|message| format!("; {message}"))
+            .unwrap_or_default();
+        println!(
+            "{}: {state} ({}){message}",
+            status.provider_id, status.status_file
+        );
+    }
 
     Ok(0)
 }
@@ -85,6 +97,18 @@ fn describe_integration_state(
     }
 }
 
+fn describe_plugin_integration_state(
+    state: crate::api::schema::IntegrationState,
+    available: bool,
+) -> &'static str {
+    match state {
+        crate::api::schema::IntegrationState::Current => "current",
+        crate::api::schema::IntegrationState::Outdated => "outdated",
+        crate::api::schema::IntegrationState::NotInstalled if available => "not installed",
+        crate::api::schema::IntegrationState::NotInstalled => "not available",
+    }
+}
+
 fn integration_install(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = parse_integration_target(args, "install")? else {
         return Ok(2);
@@ -93,6 +117,12 @@ fn integration_install(args: &[String]) -> std::io::Result<i32> {
     let installed = match target {
         IntegrationCommandTarget::Builtin(target) => crate::integration::install_target(target),
         IntegrationCommandTarget::Letta => crate::integration::install_experimental_letta(),
+        IntegrationCommandTarget::Plugin(provider_id) => {
+            crate::integration::run_plugin_integration_operation(
+                &provider_id,
+                crate::integration::PluginIntegrationOperation::Install,
+            )
+        }
     };
     match installed {
         Ok(messages) => {
@@ -114,6 +144,12 @@ fn integration_uninstall(args: &[String]) -> std::io::Result<i32> {
     let removed = match target {
         IntegrationCommandTarget::Builtin(target) => crate::integration::uninstall_target(target),
         IntegrationCommandTarget::Letta => crate::integration::uninstall_experimental_letta(),
+        IntegrationCommandTarget::Plugin(provider_id) => {
+            crate::integration::run_plugin_integration_operation(
+                &provider_id,
+                crate::integration::PluginIntegrationOperation::Uninstall,
+            )
+        }
     };
     match removed {
         Ok(messages) => {
@@ -139,6 +175,7 @@ fn print_integration_messages(messages: Vec<String>) {
 enum IntegrationCommandTarget {
     Builtin(IntegrationTarget),
     Letta,
+    Plugin(String),
 }
 
 fn parse_integration_target(
@@ -179,10 +216,16 @@ fn parse_integration_target(
             IntegrationCommandTarget::Builtin(IntegrationTarget::AntigravityCli)
         }
         "grok" => IntegrationCommandTarget::Builtin(IntegrationTarget::Grok),
+        _ if crate::integration::plugin_integration_infos()
+            .iter()
+            .any(|provider| provider.provider_id == target) =>
+        {
+            IntegrationCommandTarget::Plugin(target.to_string())
+        }
         _ => {
             eprintln!("unknown integration target: {target}");
             eprintln!(
-                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, qwen, letta, cursor, mastracode, antigravity-cli, grok"
+                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, qwen, letta, cursor, mastracode, antigravity-cli, grok, and provider ids from `herdr integration status`"
             );
             return Ok(None);
         }
@@ -193,7 +236,7 @@ fn parse_integration_target(
 
 fn print_integration_help() {
     eprintln!("herdr integration commands:");
-    eprintln!("  herdr integration install pi");
+    eprintln!("  herdr integration install <builtin-target|plugin-id.integration-id>");
     eprintln!("  herdr integration install omp");
     eprintln!("  herdr integration install claude");
     eprintln!("  herdr integration install codex");
@@ -211,7 +254,7 @@ fn print_integration_help() {
     eprintln!("  herdr integration install mastracode");
     eprintln!("  herdr integration install antigravity-cli");
     eprintln!("  herdr integration install grok");
-    eprintln!("  herdr integration uninstall pi");
+    eprintln!("  herdr integration uninstall <builtin-target|plugin-id.integration-id>");
     eprintln!("  herdr integration uninstall omp");
     eprintln!("  herdr integration uninstall claude");
     eprintln!("  herdr integration uninstall codex");

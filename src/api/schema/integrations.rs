@@ -17,6 +17,28 @@ pub struct IntegrationInfo {
     pub state: IntegrationState,
 }
 
+/// A plugin-owned integration provider. Its `provider_id` is globally stable
+/// and is accepted by `herdr integration install` and `uninstall`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PluginIntegrationInfo {
+    pub provider_id: String,
+    pub plugin_id: String,
+    pub integration_id: String,
+    pub label: String,
+    pub available: bool,
+    pub state: IntegrationState,
+    pub status_file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub supports_install: bool,
+    pub supports_uninstall: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PluginIntegrationOperationParams {
+    pub provider_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct IntegrationInstallParams {
     pub target: IntegrationTarget,
@@ -47,28 +69,6 @@ pub enum IntegrationTarget {
     Mastracode,
     AntigravityCli,
     Grok,
-}
-
-impl IntegrationTarget {
-    pub(crate) const ALL: [Self; 17] = [
-        Self::Pi,
-        Self::Omp,
-        Self::Claude,
-        Self::Codex,
-        Self::Copilot,
-        Self::Devin,
-        Self::Droid,
-        Self::Kimi,
-        Self::Opencode,
-        Self::Kilo,
-        Self::Hermes,
-        Self::Qodercli,
-        Self::Qwen,
-        Self::Cursor,
-        Self::Mastracode,
-        Self::AntigravityCli,
-        Self::Grok,
-    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -1,6 +1,6 @@
 use crate::api::schema::{
     IntegrationInfo, IntegrationInstallResult, IntegrationState, IntegrationUninstallResult,
-    ResponseResult,
+    PluginIntegrationOperationParams, ResponseResult,
 };
 use crate::app::App;
 
@@ -27,6 +27,63 @@ impl App {
             })
             .collect();
         encode_success(id, ResponseResult::IntegrationList { integrations })
+    }
+
+    pub(super) fn handle_integration_provider_list(&self, id: String) -> String {
+        encode_success(
+            id,
+            ResponseResult::IntegrationProviderList {
+                integrations: crate::integration::plugin_integration_infos(),
+            },
+        )
+    }
+
+    pub(super) fn handle_integration_provider_install(
+        &mut self,
+        id: String,
+        params: PluginIntegrationOperationParams,
+    ) -> String {
+        let provider_id = params.provider_id;
+        let messages = match crate::integration::run_plugin_integration_operation(
+            &provider_id,
+            crate::integration::PluginIntegrationOperation::Install,
+        ) {
+            Ok(messages) => messages,
+            Err(err) => {
+                return encode_error(id, "integration_provider_install_failed", err.to_string());
+            }
+        };
+        encode_success(
+            id,
+            ResponseResult::IntegrationProviderInstall {
+                provider_id,
+                details: IntegrationInstallResult { messages },
+            },
+        )
+    }
+
+    pub(super) fn handle_integration_provider_uninstall(
+        &mut self,
+        id: String,
+        params: PluginIntegrationOperationParams,
+    ) -> String {
+        let provider_id = params.provider_id;
+        let messages = match crate::integration::run_plugin_integration_operation(
+            &provider_id,
+            crate::integration::PluginIntegrationOperation::Uninstall,
+        ) {
+            Ok(messages) => messages,
+            Err(err) => {
+                return encode_error(id, "integration_provider_uninstall_failed", err.to_string());
+            }
+        };
+        encode_success(
+            id,
+            ResponseResult::IntegrationProviderUninstall {
+                provider_id,
+                details: IntegrationUninstallResult { messages },
+            },
+        )
     }
 
     pub(super) fn handle_integration_install(

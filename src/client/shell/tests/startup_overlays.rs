@@ -382,11 +382,13 @@ fn onboarding_completion_persists_and_opens_endpoint_integrations() {
             ..
         }))
     ));
-    assert!(matches!(
-        &outcome.actions[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(request.method, crate::api::schema::Method::IntegrationList(_))
-    ));
+    assert!(outcome.actions.iter().any(|action| {
+        matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(request.method, crate::api::schema::Method::IntegrationList(_))
+        )
+    }));
     let persisted = std::fs::read_to_string(&path).expect("read onboarding config");
     assert!(persisted.contains("onboarding = false"));
     assert!(persisted.contains("default_shell = \"fish\""));
@@ -404,7 +406,7 @@ fn onboarding_completion_persists_and_opens_endpoint_integrations() {
                 ..
             }))
         ));
-        assert_eq!(outcome.actions.len(), 1);
+        assert_eq!(outcome.actions.len(), 2);
     }
 
     let config = onboarding_config();
@@ -426,7 +428,7 @@ fn onboarding_completion_persists_and_opens_endpoint_integrations() {
             ..
         }))
     ));
-    assert_eq!(click.actions.len(), 1);
+    assert_eq!(click.actions.len(), 2);
 
     let unreadable_path = path.with_extension("dir");
     std::fs::create_dir(&unreadable_path).expect("create unreadable config path");
@@ -443,7 +445,7 @@ fn onboarding_completion_persists_and_opens_endpoint_integrations() {
             ..
         }))
     ));
-    assert_eq!(failed_write.actions.len(), 1);
+    assert_eq!(failed_write.actions.len(), 2);
     assert!(state
         .config_diagnostic
         .as_deref()
@@ -1181,14 +1183,36 @@ fn client_settings_preview_restore_and_endpoint_integrations_are_owned_by_overla
         assert!(next.actions.is_empty());
     }
     let integrations = state.handle_input_bytes(b"\t");
-    let [ClientShellAction::Endpoint { request, .. }] = &integrations.actions[..] else {
-        panic!("integration section should request endpoint status");
-    };
-    assert!(matches!(
-        request.method,
-        crate::api::schema::Method::IntegrationList(_)
-    ));
-    let request_id = request.id.clone();
+    let request_id = integrations
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(
+                    request.method,
+                    crate::api::schema::Method::IntegrationList(_)
+                ) =>
+            {
+                Some(request.id.clone())
+            }
+            _ => None,
+        })
+        .expect("integration section should request built-in integration status");
+    let provider_request_id = integrations
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(
+                    request.method,
+                    crate::api::schema::Method::IntegrationProviderList(_)
+                ) =>
+            {
+                Some(request.id.clone())
+            }
+            _ => None,
+        })
+        .expect("integration section should request plugin integration status");
     assert!(
         state
             .handle_endpoint_result(
@@ -1215,6 +1239,30 @@ fn client_settings_preview_restore_and_endpoint_integrations_are_owned_by_overla
             )
             .0
     );
+    assert!(
+        state
+            .handle_endpoint_result(
+                "boot-1",
+                &provider_request_id,
+                Ok(
+                    crate::api::schema::ResponseResult::IntegrationProviderList {
+                        integrations: vec![crate::api::schema::PluginIntegrationInfo {
+                            provider_id: "example.agent-manager.claude".into(),
+                            plugin_id: "example.agent-manager".into(),
+                            integration_id: "claude".into(),
+                            label: "managed claude".into(),
+                            available: true,
+                            state: crate::api::schema::IntegrationState::Current,
+                            status_file: "/tmp/claude.json".into(),
+                            message: None,
+                            supports_install: true,
+                            supports_uninstall: true,
+                        }],
+                    }
+                ),
+            )
+            .0
+    );
     let frame = state.compose(106, 30).expect("loaded integrations");
     let text = frame
         .cells
@@ -1228,6 +1276,7 @@ fn client_settings_preview_restore_and_endpoint_integrations_are_owned_by_overla
         .join("\n");
     assert!(text.contains("update available"));
     assert!(text.contains("not found"));
+    assert!(text.contains("installed"));
     assert!(!text.contains("pane labels"));
 
     let popup = state.hits.settings_popup;
@@ -1279,11 +1328,23 @@ fn client_settings_preview_restore_and_endpoint_integrations_are_owned_by_overla
         }),
     );
     assert!(repaint);
-    assert!(matches!(
-        refresh_actions.as_slice(),
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(request.method, crate::api::schema::Method::IntegrationList(_))
-    ));
+    assert!(refresh_actions.iter().any(|action| {
+        matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(request.method, crate::api::schema::Method::IntegrationList(_))
+        )
+    }));
+    assert!(refresh_actions.iter().any(|action| {
+        matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(
+                    request.method,
+                    crate::api::schema::Method::IntegrationProviderList(_)
+                )
+        )
+    }));
     assert!(matches!(
         state.overlay,
         Some(ClientShellOverlay::Settings(ClientSettingsOverlay {

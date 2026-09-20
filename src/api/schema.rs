@@ -246,6 +246,12 @@ pub enum Method {
     IntegrationInstall(IntegrationInstallParams),
     #[serde(rename = "integration.uninstall")]
     IntegrationUninstall(IntegrationUninstallParams),
+    #[serde(rename = "integration.provider.list")]
+    IntegrationProviderList(EmptyParams),
+    #[serde(rename = "integration.provider.install")]
+    IntegrationProviderInstall(PluginIntegrationOperationParams),
+    #[serde(rename = "integration.provider.uninstall")]
+    IntegrationProviderUninstall(PluginIntegrationOperationParams),
     #[serde(rename = "plugin.link")]
     PluginLink(PluginLinkParams),
     #[serde(rename = "plugin.list")]

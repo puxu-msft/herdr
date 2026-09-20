@@ -6,6 +6,7 @@ mod config_file;
 mod env;
 mod file_ops;
 mod opencode_config;
+mod providers;
 mod registry;
 mod targets;
 mod types;
@@ -19,6 +20,9 @@ pub(crate) use env::integration_env_lock;
 pub(crate) use env::{
     apply_pane_base_env, HERDR_PANE_ID_ENV_VAR, HERDR_TAB_ID_ENV_VAR, HERDR_WORKSPACE_ID_ENV_VAR,
 };
+pub(crate) use providers::{
+    plugin_integration_infos, run_plugin_integration_operation, PluginIntegrationOperation,
+};
 pub(crate) use registry::{
     experimental_letta_integration_status, installed_integration_statuses,
     integration_recommendations, integration_target_label, print_outdated_update_notice,
@@ -27,11 +31,6 @@ pub(crate) use types::{
     ExperimentalIntegrationStatus, IntegrationRecommendation, IntegrationStatus,
     IntegrationStatusKind,
 };
-
-/// CLI labels for experimental integrations that are intentionally not part of
-/// the frozen client endpoint `IntegrationTarget` enum. Empty this list once the
-/// agent registry provides first-class target registration.
-pub(crate) const EXPERIMENTAL_INTEGRATION_TARGET_LABELS: &[&str] = &["letta"];
 
 const PI_EXTENSION_INSTALL_NAME: &str = "herdr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/herdr-agent-state.ts");

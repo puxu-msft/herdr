@@ -56,6 +56,8 @@ pub struct InstalledPluginInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<PluginManifestEventHook>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub integrations: Vec<PluginManifestIntegration>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub panes: Vec<PluginManifestPane>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link_handlers: Vec<PluginManifestLinkHandler>,
@@ -259,6 +261,23 @@ pub struct PluginManifestEventHook {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platforms: Option<Vec<PluginPlatform>>,
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PluginManifestIntegration {
+    pub id: String,
+    pub label: String,
+    /// Relative to `HERDR_PLUGIN_STATE_DIR`. The file contains the current
+    /// provider status as JSON and is owned by the plugin.
+    pub status_file: String,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<Vec<PluginPlatform>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub install: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uninstall: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

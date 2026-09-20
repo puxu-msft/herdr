@@ -753,16 +753,16 @@ fn session_command() -> Command {
 
 fn integration_command() -> Command {
     Command::new("integration")
-        .about("Manage built-in agent integrations")
+        .about("Manage built-in and plugin-provided agent integrations")
         .subcommand(
             Command::new("install")
                 .about("Install an integration")
-                .arg(integration_target_arg()),
+                .arg(required("target", "TARGET")),
         )
         .subcommand(
             Command::new("uninstall")
                 .about("Uninstall an integration")
-                .arg(integration_target_arg()),
+                .arg(required("target", "TARGET")),
         )
         .subcommand(
             Command::new("status")
@@ -885,22 +885,6 @@ fn plugin_command() -> Command {
 
 fn current_pane_args() -> [Arg; 2] {
     [option("pane", "ID"), flag("current")]
-}
-
-fn integration_target_arg() -> Arg {
-    Arg::new("target")
-        .value_name("TARGET")
-        .required(true)
-        .value_parser(integration_target_values())
-}
-
-fn integration_target_values() -> Vec<&'static str> {
-    let mut values: Vec<&'static str> = crate::api::schema::IntegrationTarget::ALL
-        .into_iter()
-        .map(crate::integration::integration_target_label)
-        .collect();
-    values.extend_from_slice(crate::integration::EXPERIMENTAL_INTEGRATION_TARGET_LABELS);
-    values
 }
 
 fn id_command(name: &'static str, id: &'static str, about: &'static str) -> Command {
@@ -1120,27 +1104,12 @@ mod tests {
     }
 
     #[test]
-    fn spec_matches_all_integration_targets() {
+    fn integration_targets_accept_plugin_provider_ids() {
         let cmd = super::command();
         let install = command_path(&cmd, &["integration", "install"]);
-        let mut expected: Vec<String> = crate::api::schema::IntegrationTarget::ALL
-            .map(crate::integration::integration_target_label)
-            .map(str::to_string)
-            .to_vec();
-        expected.extend(
-            crate::integration::EXPERIMENTAL_INTEGRATION_TARGET_LABELS
-                .iter()
-                .map(|label| (*label).to_string()),
-        );
-        assert_eq!(
-            argument(install, "target")
-                .get_value_parser()
-                .possible_values()
-                .unwrap()
-                .map(|value| value.get_name().to_string())
-                .collect::<Vec<_>>(),
-            expected
-        );
+        let target = argument(install, "target");
+        assert!(target.is_required_set());
+        assert!(target.get_value_parser().possible_values().is_none());
     }
 
     #[test]

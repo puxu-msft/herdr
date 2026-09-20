@@ -865,6 +865,7 @@ mod tests {
                     platforms: None,
                     command: vec!["sh".into(), "-c".into(), "true".into()],
                 }],
+                integrations: Vec::new(),
                 panes: Vec::new(),
                 link_handlers: Vec::new(),
                 source: crate::api::schema::PluginSourceInfo::default(),

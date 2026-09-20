@@ -68,6 +68,45 @@ Herdr 以两种不同方式使用集成:
 
 自定义集成在定义了原生终端 UI 中不可见的状态时,也可以上报状态。它们不需要内置到 Herdr 中,也不要求 Herdr 识别智能体的可执行文件。
 
+## 由插件管理的集成
+
+插件可以提供集中管理的集成,而无需新增内置 target。在
+`herdr-plugin.toml` 中声明一个或多个 `[[integrations]]` 条目；每项有插件内
+id、显示标签、可选的安装和卸载 argv 命令，以及相对于
+`HERDR_PLUGIN_STATE_DIR` 的 `status_file`。
+
+```toml
+[[integrations]]
+id = "claude"
+label = "集中管理的 Claude Code"
+status_file = "integrations/claude.json"
+available = true
+install = ["node", "bin/manage.js", "install", "claude"]
+uninstall = ["node", "bin/manage.js", "uninstall", "claude"]
+```
+
+插件拥有状态文件，并写入如下结构化 JSON：
+
+```json
+{"state":"current","available":true,"message":"共享 hook 已启用"}
+```
+
+`state` 可以是 `not_installed`、`current` 或 `outdated`; `available` 和
+`message` 可选。Herdr 会在 Settings 和 `herdr integration status` 中列出已启用
+provider；Settings 会安装所有声明安装命令且可用或过期的 provider。使用其限定
+provider id 安装或卸载：
+
+```bash
+herdr integration install example.agent-manager.claude
+herdr integration uninstall example.agent-manager.claude
+```
+
+Herdr 会从插件根目录直接以 argv 执行这些命令，绝不经过 shell。命令会收到
+通常的插件根目录、配置、状态、socket 与二进制环境变量，以及
+`HERDR_PLUGIN_INTEGRATION_ID`、`HERDR_PLUGIN_INTEGRATION_PROVIDER_ID` 和
+`HERDR_PLUGIN_INTEGRATION_OPERATION`。插件管理的 provider 不会修改固定的内置
+集成 target 或其兼容性契约。
+
 ## 集成你自己的智能体
 
 在 Herdr 窗格中运行的智能体会继承 `HERDR_ENV`、`HERDR_PANE_ID`、`HERDR_BIN_PATH` 和 `HERDR_SOCKET_PATH`。如果智能体提供生命周期钩子,可从这些钩子通过 Herdr CLI 上报语义状态:

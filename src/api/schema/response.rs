@@ -4,7 +4,7 @@ use super::agents::AgentInfo;
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::events::EventEnvelope;
 use super::integrations::{
-    IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
+    IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult, PluginIntegrationInfo,
 };
 use super::panes::{
     LayoutDescription, PaneEdgesResult, PaneFocusDirectionResult, PaneInfo, PaneLayoutSnapshot,
@@ -238,6 +238,17 @@ pub enum ResponseResult {
     },
     IntegrationUninstall {
         target: IntegrationTarget,
+        details: IntegrationUninstallResult,
+    },
+    IntegrationProviderList {
+        integrations: Vec<PluginIntegrationInfo>,
+    },
+    IntegrationProviderInstall {
+        provider_id: String,
+        details: IntegrationInstallResult,
+    },
+    IntegrationProviderUninstall {
+        provider_id: String,
         details: IntegrationUninstallResult,
     },
     AgentManifestReload {

@@ -1192,6 +1192,15 @@ impl App {
             Method::IntegrationUninstall(params) => {
                 return self.handle_integration_uninstall(request.id, params);
             }
+            Method::IntegrationProviderList(_) => {
+                return self.handle_integration_provider_list(request.id);
+            }
+            Method::IntegrationProviderInstall(params) => {
+                return self.handle_integration_provider_install(request.id, params);
+            }
+            Method::IntegrationProviderUninstall(params) => {
+                return self.handle_integration_provider_uninstall(request.id, params);
+            }
             Method::PluginLink(params) => {
                 return self.handle_plugin_link(request.id, params);
             }

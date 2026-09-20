@@ -1721,6 +1721,7 @@ mod tests {
             startup: vec![],
             actions: vec![],
             events: vec![],
+            integrations: vec![],
             panes: vec![],
             link_handlers: vec![],
             source: PluginSourceInfo {

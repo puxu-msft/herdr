@@ -39,8 +39,10 @@ impl ClientShellState {
             original_theme_name: self.config.theme_name.clone(),
             original_palette: self.config.palette.clone(),
             integrations: Vec::new(),
+            plugin_integrations: Vec::new(),
             integration_messages: Vec::new(),
             loading_integrations: false,
+            pending_integration_lists: 0,
             installing_integrations: false,
         }));
     }
@@ -99,7 +101,9 @@ impl ClientShellState {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
                 ClientSettingsSection::Indicators | ClientSettingsSection::Sound => 2,
                 ClientSettingsSection::Toast => 4,
-                ClientSettingsSection::Integrations => settings.integrations.len(),
+                ClientSettingsSection::Integrations => {
+                    settings.integrations.len() + settings.plugin_integrations.len()
+                }
             },
             _ => 0,
         }
@@ -229,18 +233,36 @@ impl ClientShellState {
     fn queue_integration_list(&mut self, outcome: &mut ClientShellInput, clear_messages: bool) {
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
             settings.loading_integrations = true;
+            settings.pending_integration_lists = 0;
             if clear_messages {
                 settings.integration_messages.clear();
             }
         }
-        if !self.push_endpoint_method_with_kind(
+        if self.push_endpoint_method_with_kind(
             crate::api::schema::Method::IntegrationList(crate::api::schema::EmptyParams::default()),
             PendingEndpointKind::IntegrationList,
             outcome,
         ) {
             if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
-                settings.loading_integrations = false;
+                settings.pending_integration_lists += 1;
             }
+        }
+        let provider_method = crate::api::schema::Method::IntegrationProviderList(
+            crate::api::schema::EmptyParams::default(),
+        );
+        if self.supports_endpoint_method(&provider_method)
+            && self.push_endpoint_method_with_kind(
+                provider_method,
+                PendingEndpointKind::IntegrationProviderList,
+                outcome,
+            )
+        {
+            if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                settings.pending_integration_lists += 1;
+            }
+        }
+        if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+            settings.loading_integrations = settings.pending_integration_lists > 0;
         }
     }
 
@@ -257,7 +279,22 @@ impl ClientShellState {
                 .collect::<Vec<_>>(),
             _ => return,
         };
-        if targets.is_empty() {
+        let provider_ids = match self.overlay.as_ref() {
+            Some(ClientShellOverlay::Settings(settings)) => settings
+                .plugin_integrations
+                .iter()
+                .filter(|integration| {
+                    integration.supports_install
+                        && (integration.state == crate::api::schema::IntegrationState::Outdated
+                            || (integration.available
+                                && integration.state
+                                    == crate::api::schema::IntegrationState::NotInstalled))
+                })
+                .map(|integration| integration.provider_id.clone())
+                .collect::<Vec<_>>(),
+            _ => return,
+        };
+        if targets.is_empty() && provider_ids.is_empty() {
             return;
         }
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
@@ -271,6 +308,17 @@ impl ClientShellState {
                     crate::api::schema::IntegrationInstallParams { target },
                 ),
                 PendingEndpointKind::IntegrationInstall,
+                outcome,
+            ) {
+                self.pending_integration_installs += 1;
+            }
+        }
+        for provider_id in provider_ids {
+            if self.push_endpoint_method_with_kind(
+                crate::api::schema::Method::IntegrationProviderInstall(
+                    crate::api::schema::PluginIntegrationOperationParams { provider_id },
+                ),
+                PendingEndpointKind::IntegrationProviderInstall,
                 outcome,
             ) {
                 self.pending_integration_installs += 1;
@@ -292,7 +340,9 @@ impl ClientShellState {
         match kind {
             PendingEndpointKind::IntegrationList => {
                 if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
-                    settings.loading_integrations = false;
+                    settings.pending_integration_lists =
+                        settings.pending_integration_lists.saturating_sub(1);
+                    settings.loading_integrations = settings.pending_integration_lists > 0;
                     match result {
                         Ok(crate::api::schema::ResponseResult::IntegrationList {
                             integrations,
@@ -305,6 +355,34 @@ impl ClientShellState {
                         Ok(_) => {
                             self.set_endpoint_error(
                                 "endpoint returned an unexpected integration list result",
+                            );
+                        }
+                        Err(_) => {}
+                    }
+                }
+                (true, Vec::new())
+            }
+            PendingEndpointKind::IntegrationProviderList => {
+                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                    settings.pending_integration_lists =
+                        settings.pending_integration_lists.saturating_sub(1);
+                    settings.loading_integrations = settings.pending_integration_lists > 0;
+                    match result {
+                        Ok(crate::api::schema::ResponseResult::IntegrationProviderList {
+                            integrations,
+                        }) => {
+                            settings.plugin_integrations = integrations;
+                            settings.selected = settings.selected.min(
+                                settings
+                                    .integrations
+                                    .len()
+                                    .saturating_add(settings.plugin_integrations.len())
+                                    .saturating_sub(1),
+                            );
+                        }
+                        Ok(_) => {
+                            self.set_endpoint_error(
+                                "endpoint returned an unexpected plugin integration list result",
                             );
                         }
                         Err(_) => {}
@@ -327,6 +405,37 @@ impl ClientShellState {
                         Ok(_) => settings
                             .integration_messages
                             .push("endpoint returned an unexpected integration result".into()),
+                        Err(error) => settings.integration_messages.push(error.message),
+                    }
+                    settings.installing_integrations = self.pending_integration_installs > 0;
+                }
+                let actions = if !cancelled
+                    && self.pending_integration_installs == 0
+                    && matches!(self.overlay, Some(ClientShellOverlay::Settings(_)))
+                {
+                    let mut deferred = ClientShellInput::default();
+                    self.queue_integration_list(&mut deferred, false);
+                    deferred.actions
+                } else {
+                    Vec::new()
+                };
+                (true, actions)
+            }
+            PendingEndpointKind::IntegrationProviderInstall => {
+                let cancelled = result
+                    .as_ref()
+                    .is_err_and(|error| error.code.as_deref() == Some("endpoint_cancelled"));
+                self.pending_integration_installs =
+                    self.pending_integration_installs.saturating_sub(1);
+                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                    match result {
+                        Ok(crate::api::schema::ResponseResult::IntegrationProviderInstall {
+                            details,
+                            ..
+                        }) => settings.integration_messages.extend(details.messages),
+                        Ok(_) => settings.integration_messages.push(
+                            "endpoint returned an unexpected plugin integration result".into(),
+                        ),
                         Err(error) => settings.integration_messages.push(error.message),
                     }
                     settings.installing_integrations = self.pending_integration_installs > 0;

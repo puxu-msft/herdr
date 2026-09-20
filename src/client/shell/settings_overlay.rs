@@ -331,7 +331,7 @@ fn render_integrations(
         );
         return;
     }
-    if settings.integrations.is_empty() {
+    if settings.integrations.is_empty() && settings.plugin_integrations.is_empty() {
         put_text(
             buffer,
             area.x,
@@ -384,10 +384,55 @@ fn render_integrations(
             Style::default().fg(palette.overlay1).bg(palette.panel_bg),
         );
     }
-    let message_y = area
-        .y
-        .saturating_add(4)
-        .saturating_add(settings.integrations.len() as u16);
+    let plugin_offset = settings.integrations.len();
+    for (index, integration) in settings.plugin_integrations.iter().enumerate() {
+        let y = area.y + 3 + (plugin_offset + index) as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        let (marker, color, status) = match integration.state {
+            crate::api::schema::IntegrationState::Current => ("✓", palette.green, "installed"),
+            crate::api::schema::IntegrationState::Outdated => {
+                ("↻", palette.yellow, "update available")
+            }
+            crate::api::schema::IntegrationState::NotInstalled if integration.available => {
+                ("+", palette.accent, "available")
+            }
+            crate::api::schema::IntegrationState::NotInstalled => {
+                ("–", palette.overlay0, "not found")
+            }
+        };
+        put_text(
+            buffer,
+            area.x,
+            y,
+            3,
+            &format!(" {marker}"),
+            Style::default().fg(color).bg(palette.panel_bg),
+        );
+        put_text(
+            buffer,
+            area.x + 3,
+            y,
+            11.min(area.width.saturating_sub(3)),
+            &format!("{:<9}", integration.label),
+            Style::default().fg(palette.subtext0).bg(palette.panel_bg),
+        );
+        put_text(
+            buffer,
+            area.x + 14,
+            y,
+            area.width.saturating_sub(14),
+            status,
+            Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+        );
+    }
+    let message_y = area.y.saturating_add(4).saturating_add(
+        settings
+            .integrations
+            .len()
+            .saturating_add(settings.plugin_integrations.len()) as u16,
+    );
     for (offset, message) in settings.integration_messages.iter().take(6).enumerate() {
         let y = message_y.saturating_add(offset as u16);
         if y >= area.bottom() {

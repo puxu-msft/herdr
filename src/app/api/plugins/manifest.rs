@@ -1,7 +1,7 @@
 use crate::api::schema::{
     InstalledPluginInfo, PluginManifestAction, PluginManifestBuild, PluginManifestEventHook,
-    PluginManifestLinkHandler, PluginManifestPane, PluginManifestStartup, PluginPanePlacement,
-    PluginPlatform, PluginSourceInfo, PluginSourceKind,
+    PluginManifestIntegration, PluginManifestLinkHandler, PluginManifestPane,
+    PluginManifestStartup, PluginPanePlacement, PluginPlatform, PluginSourceInfo, PluginSourceKind,
 };
 use crate::popup_size::PopupSize;
 
@@ -27,6 +27,8 @@ struct RawPluginManifest {
     actions: Vec<RawPluginManifestAction>,
     #[serde(default)]
     events: Vec<RawPluginManifestEventHook>,
+    #[serde(default)]
+    integrations: Vec<RawPluginManifestIntegration>,
     #[serde(default)]
     panes: Vec<RawPluginManifestPane>,
     #[serde(default)]
@@ -66,6 +68,21 @@ struct RawPluginManifestEventHook {
     #[serde(default)]
     platforms: Option<Vec<RawPlatform>>,
     command: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawPluginManifestIntegration {
+    id: String,
+    label: String,
+    status_file: String,
+    #[serde(default)]
+    available: bool,
+    #[serde(default)]
+    platforms: Option<Vec<RawPlatform>>,
+    #[serde(default)]
+    install: Vec<String>,
+    #[serde(default)]
+    uninstall: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -183,6 +200,13 @@ pub(crate) fn load_plugin_manifest(
                 .cmp(b.command.iter().map(|arg| arg.trim()))
         })
     });
+    let mut integrations = raw
+        .integrations
+        .into_iter()
+        .map(normalize_manifest_integration)
+        .collect::<Result<Vec<_>, _>>()?;
+    reject_duplicate_integration_ids(&integrations)?;
+    integrations.sort_by(|a, b| a.id.cmp(&b.id));
     let mut panes = raw
         .panes
         .into_iter()
@@ -217,6 +241,7 @@ pub(crate) fn load_plugin_manifest(
         startup,
         actions,
         events,
+        integrations,
         panes,
         link_handlers,
         source: Default::default(),
@@ -345,6 +370,21 @@ fn reject_duplicate_pane_ids(panes: &[PluginManifestPane]) -> Result<(), (&'stat
     Ok(())
 }
 
+fn reject_duplicate_integration_ids(
+    integrations: &[PluginManifestIntegration],
+) -> Result<(), (&'static str, String)> {
+    let mut seen = std::collections::HashSet::new();
+    for integration in integrations {
+        if !seen.insert(integration.id.as_str()) {
+            return Err((
+                "duplicate_plugin_integration_id",
+                format!("duplicate integration id '{}'", integration.id),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn reject_duplicate_link_handler_ids(
     handlers: &[PluginManifestLinkHandler],
 ) -> Result<(), (&'static str, String)> {
@@ -451,6 +491,68 @@ fn normalize_manifest_event(
         platforms,
         command,
     })
+}
+
+fn normalize_manifest_integration(
+    integration: RawPluginManifestIntegration,
+) -> Result<PluginManifestIntegration, (&'static str, String)> {
+    let id = normalize_action_id(&integration.id).ok_or_else(|| {
+        (
+            "invalid_plugin_integration_id",
+            "invalid integration id".to_string(),
+        )
+    })?;
+    let label = non_empty_trimmed(
+        &integration.label,
+        "invalid_plugin_integration_label",
+        "integration label is required",
+    )?;
+    let status_file = normalize_relative_status_file(&integration.status_file)?;
+    let platforms = normalize_platforms(integration.platforms)?;
+    let install = normalize_optional_command(integration.install)?;
+    let uninstall = normalize_optional_command(integration.uninstall)?;
+    Ok(PluginManifestIntegration {
+        id,
+        label,
+        status_file,
+        available: integration.available,
+        platforms,
+        install,
+        uninstall,
+    })
+}
+
+fn normalize_relative_status_file(value: &str) -> Result<String, (&'static str, String)> {
+    let value = non_empty_trimmed(
+        value,
+        "invalid_plugin_integration_status_file",
+        "integration status_file is required",
+    )?;
+    let path = std::path::Path::new(&value);
+    if !path.is_relative()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err((
+            "invalid_plugin_integration_status_file",
+            "integration status_file must be a relative path inside HERDR_PLUGIN_STATE_DIR"
+                .to_string(),
+        ));
+    }
+    Ok(value)
+}
+
+fn normalize_optional_command(command: Vec<String>) -> Result<Vec<String>, (&'static str, String)> {
+    if command.is_empty() {
+        return Ok(Vec::new());
+    }
+    normalize_command(command)
 }
 
 fn normalize_manifest_link_handler(

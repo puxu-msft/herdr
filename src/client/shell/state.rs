@@ -417,8 +417,10 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) original_theme_name: String,
     pub(super) original_palette: Palette,
     pub(super) integrations: Vec<crate::api::schema::IntegrationInfo>,
+    pub(super) plugin_integrations: Vec<crate::api::schema::PluginIntegrationInfo>,
     pub(super) integration_messages: Vec<String>,
     pub(super) loading_integrations: bool,
+    pub(super) pending_integration_lists: usize,
     pub(super) installing_integrations: bool,
 }
 
@@ -617,7 +619,9 @@ pub(super) enum PendingEndpointKind {
     PopupCommand,
     ReloadConfig,
     IntegrationList,
+    IntegrationProviderList,
     IntegrationInstall,
+    IntegrationProviderInstall,
     PrepareWorktreeCreate {
         workspace_id: String,
     },
