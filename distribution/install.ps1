@@ -702,9 +702,8 @@ switch ($architecture) {
         $targetTriple = "x86_64-pc-windows-msvc"
     }
     "Arm64" {
-        $target = "windows-x86_64"
-        $targetTriple = "x86_64-pc-windows-msvc"
-        Write-Step "Windows ARM64 detected; installing the x86_64 build under Windows emulation."
+        $target = "windows-aarch64"
+        $targetTriple = "aarch64-pc-windows-msvc"
     }
     default {
         Write-Error "Unsupported Windows architecture: $architecture"
@@ -798,6 +797,20 @@ if ($useLocalPackage) {
     } else {
         $assetsProperty.Value.PSObject.Properties[$target]
     }
+    if ($null -eq $assetProperty -and $target -eq "windows-aarch64") {
+        $fallbackTarget = "windows-x86_64"
+        $fallbackProperty = if ($null -eq $assetsProperty) {
+            $null
+        } else {
+            $assetsProperty.Value.PSObject.Properties[$fallbackTarget]
+        }
+        if ($null -ne $fallbackProperty) {
+            Write-WarningStep "The release manifest does not include Windows ARM64 yet; installing the x86_64 build under Windows emulation."
+            $target = $fallbackTarget
+            $targetTriple = "x86_64-pc-windows-msvc"
+            $assetProperty = $fallbackProperty
+        }
+    }
     if ($null -eq $assetProperty -and
         -not $channelWasExplicit -and
         $Channel -eq "stable" -and
@@ -807,6 +820,15 @@ if ($useLocalPackage) {
         $ManifestUrl = $ManifestUrl.Substring(0, $ManifestUrl.Length - "latest.json".Length) + "preview.json"
         Write-Step "Fetching Herdr preview manifest"
         $manifest = Get-RemoteManifest -Uri $ManifestUrl
+    }
+    if ($null -eq $assetProperty -and $target -eq "windows-aarch64") {
+        $fallbackTarget = "windows-x86_64"
+        $fallbackProperty = $manifest.assets.PSObject.Properties[$fallbackTarget]
+        if ($null -ne $fallbackProperty) {
+            Write-WarningStep "The preview manifest does not include Windows ARM64 yet; installing the x86_64 build under Windows emulation."
+            $target = $fallbackTarget
+            $targetTriple = "x86_64-pc-windows-msvc"
+        }
     }
     $asset = Get-ManifestAsset -Manifest $manifest -Target $target
     if (-not [string]::IsNullOrWhiteSpace($ExpectedBuildId) -and [string]$manifest.build_id -ne $ExpectedBuildId) {

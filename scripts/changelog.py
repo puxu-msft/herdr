@@ -23,13 +23,13 @@ ENDPOINT_PROTOCOL_SOURCE_PATH = Path("src/protocol/endpoint.rs")
 CORE_ASSET_TARGETS = (
     "linux-x86_64",
     "linux-aarch64",
-    "macos-x86_64",
     "macos-aarch64",
 )
-ASSET_TARGETS = (*CORE_ASSET_TARGETS, "windows-x86_64")
+ASSET_TARGETS = (*CORE_ASSET_TARGETS, "windows-x86_64", "windows-aarch64")
 EXPECTED_ASSET_NAMES = {
     **{target: f"herdr-{target}" for target in CORE_ASSET_TARGETS},
     "windows-x86_64": "herdr-windows-x86_64.zip",
+    "windows-aarch64": "herdr-windows-aarch64.zip",
 }
 
 

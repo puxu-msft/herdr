@@ -527,7 +527,11 @@ fn first_windows_stable_is_pending(
     is_windows: bool,
     installed_is_preview: bool,
 ) -> bool {
-    is_windows && installed_is_preview && !manifest.assets.contains_key("windows-x86_64")
+    is_windows
+        && installed_is_preview
+        && !manifest
+            .assets
+            .contains_key(&format!("windows-{}", platform_target().1))
 }
 
 fn check_latest() -> Result<Option<ReleaseInfo>, String> {

@@ -86,9 +86,9 @@ Choose the asset that matches your system:
 | --- | --- |
 | Linux x86_64 | `herdr-linux-x86_64` |
 | Linux aarch64 | `herdr-linux-aarch64` |
-| macOS Intel | `herdr-macos-x86_64` |
 | macOS Apple silicon | `herdr-macos-aarch64` |
 | Windows x86_64 | `herdr-windows-x86_64.zip` |
+| Windows ARM64 | `herdr-windows-aarch64.zip` |
 
 On Linux or macOS, make it executable and move it somewhere on your PATH.
 
@@ -99,7 +99,7 @@ mv herdr-linux-x86_64 ~/.local/bin/herdr
 
 ### Windows archive
 
-Stable releases and preview prereleases both include `herdr-windows-x86_64.zip`. The archive contains `herdr.exe` and its app-local ConPTY runtime. Keep the extracted directory together; do not copy only `herdr.exe`.
+Stable releases and preview prereleases include architecture-matched Windows archives. Each archive contains `herdr.exe` and its app-local ConPTY runtime. Keep the extracted directory together; do not copy only `herdr.exe`.
 
 ## Verify
 

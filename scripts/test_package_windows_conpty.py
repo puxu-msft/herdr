@@ -27,6 +27,13 @@ class WindowsConptyPackageTests(unittest.TestCase):
                 "conpty/arm64/OpenConsole.exe",
             },
         )
+        self.assertEqual(
+            {item["destination"] for item in metadata["bundles"]["arm64"]["files"]},
+            {
+                "conpty/conpty.dll",
+                "conpty/arm64/OpenConsole.exe",
+            },
+        )
         loader = (
             package.PROJECT_ROOT / "vendor/portable-pty/src/win/psuedocon.rs"
         ).read_text(encoding="utf-8")
@@ -35,6 +42,8 @@ class WindowsConptyPackageTests(unittest.TestCase):
         )
         for item in metadata["bundles"]["x86_64"]["files"]:
             self.assertIn(item["sha256"], loader)
+            self.assertNotIn(item["sha256"], installer)
+        for item in metadata["bundles"]["arm64"]["files"]:
             self.assertNotIn(item["sha256"], installer)
         self.assertIn('Get-Content -LiteralPath $markerPath -Raw', installer)
         self.assertIn('$filesProperty.Value.PSObject.Properties[$relative]', installer)
@@ -51,6 +60,7 @@ class WindowsConptyPackageTests(unittest.TestCase):
         self.assertIn('conpty\\arm64\\OpenConsole.exe', wrapper)
         self.assertIn('conpty\\x64\\OpenConsole.exe', wrapper)
         self.assertIn('conpty\\conpty.dll', wrapper)
+        self.assertIn('"--architecture", $Architecture', wrapper)
         self.assertIn('"*Microsoft Corporation*"', wrapper)
 
     def test_package_download_retries_server_errors_with_a_finite_timeout(self) -> None:

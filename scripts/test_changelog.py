@@ -31,6 +31,7 @@ def release_assets(version: str) -> dict[str, str]:
     return {
         **default_release_assets(normalized),
         "windows-x86_64": f"https://github.com/herdrdev/herdr/releases/download/v{normalized}/herdr-windows-x86_64.zip",
+        "windows-aarch64": f"https://github.com/herdrdev/herdr/releases/download/v{normalized}/herdr-windows-aarch64.zip",
     }
 
 
@@ -38,9 +39,9 @@ def release_sha256() -> dict[str, str]:
     return {
         "linux-x86_64": "a" * 64,
         "linux-aarch64": "b" * 64,
-        "macos-x86_64": "c" * 64,
-        "macos-aarch64": "d" * 64,
-        "windows-x86_64": "e" * 64,
+        "macos-aarch64": "c" * 64,
+        "windows-x86_64": "d" * 64,
+        "windows-aarch64": "e" * 64,
     }
 
 
@@ -48,19 +49,19 @@ def release_assets_with_digests() -> list[dict[str, str]]:
     return [
         {
             "name": (
-                "herdr-windows-x86_64.zip"
-                if target == "windows-x86_64"
+                f"herdr-{target}.zip"
+                if target.startswith("windows-")
                 else f"herdr-{target}"
             ),
-            "url": f"https://example.com/{target}{'.zip' if target == 'windows-x86_64' else ''}",
+            "url": f"https://example.com/{target}{'.zip' if target.startswith('windows-') else ''}",
             "digest": f"sha256:{digest * 64}",
         }
         for target, digest in (
             ("linux-x86_64", "a"),
             ("linux-aarch64", "b"),
-            ("macos-x86_64", "c"),
-            ("macos-aarch64", "d"),
-            ("windows-x86_64", "e"),
+            ("macos-aarch64", "c"),
+            ("windows-x86_64", "d"),
+            ("windows-aarch64", "e"),
         )
     ]
 
@@ -129,9 +130,9 @@ class ChangelogScriptTests(unittest.TestCase):
             {
                 "linux-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/herdr-linux-x86_64",
                 "linux-aarch64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/herdr-linux-aarch64",
-                "macos-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/herdr-macos-x86_64",
                 "macos-aarch64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/herdr-macos-aarch64",
                 "windows-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/herdr-windows-x86_64.zip",
+                "windows-aarch64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/herdr-windows-aarch64.zip",
             },
         )
         self.assertEqual(manifest["releases"]["0.1.1"]["assets"], manifest["assets"])
@@ -361,9 +362,9 @@ class ChangelogScriptTests(unittest.TestCase):
                 "assets": {
                     "linux-x86_64": "https://example.com/linux-x86_64",
                     "linux-aarch64": "https://example.com/linux-aarch64",
-                    "macos-x86_64": "https://example.com/macos-x86_64",
                     "macos-aarch64": "https://example.com/macos-aarch64",
                     "windows-x86_64": "https://example.com/windows-x86_64.zip",
+                    "windows-aarch64": "https://example.com/windows-aarch64.zip",
                 },
                 "sha256": release_sha256(),
             },
@@ -458,9 +459,9 @@ class ChangelogScriptTests(unittest.TestCase):
             "assets": {
                 "linux-x86_64": " https://example.com/linux-x86_64 ",
                 "linux-aarch64": "https://example.com/linux-aarch64",
-                "macos-x86_64": "https://example.com/macos-x86_64",
                 "macos-aarch64": "https://example.com/macos-aarch64",
                 "windows-x86_64": "https://example.com/windows-x86_64.zip",
+                "windows-aarch64": "https://example.com/windows-aarch64.zip",
             },
             "sha256": release_sha256(),
         }
@@ -472,9 +473,9 @@ class ChangelogScriptTests(unittest.TestCase):
             "assets": {
                 "linux-x86_64": "https://example.com/linux-x86_64",
                 "linux-aarch64": "https://example.com/linux-aarch64",
-                "macos-x86_64": "https://example.com/macos-x86_64",
                 "macos-aarch64": "https://example.com/macos-aarch64",
                 "windows-x86_64": "https://example.com/windows-x86_64.zip",
+                "windows-aarch64": "https://example.com/windows-aarch64.zip",
             },
             "sha256": release_sha256(),
         }
@@ -532,9 +533,9 @@ class ChangelogScriptTests(unittest.TestCase):
                     "assets": {
                         "linux-x86_64": "https://example.com/linux-x86_64",
                         "linux-aarch64": "https://example.com/linux-aarch64",
-                        "macos-x86_64": "https://example.com/macos-x86_64",
                         "macos-aarch64": "https://example.com/macos-aarch64",
                         "windows-x86_64": "https://example.com/windows-x86_64.zip",
+                        "windows-aarch64": "https://example.com/windows-aarch64.zip",
                     },
                     "sha256": release_sha256(),
                 },
@@ -545,9 +546,9 @@ class ChangelogScriptTests(unittest.TestCase):
                     "assets": {
                         "linux-x86_64": "https://example.com/linux-x86_64",
                         "linux-aarch64": "https://example.com/linux-aarch64",
-                        "macos-x86_64": "https://example.com/macos-x86_64",
                         "macos-aarch64": "https://example.com/macos-aarch64",
                         "windows-x86_64": "https://example.com/windows-x86_64.zip",
+                        "windows-aarch64": "https://example.com/windows-aarch64.zip",
                     },
                     "sha256": release_sha256(),
                 },

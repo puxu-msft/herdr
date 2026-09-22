@@ -9,7 +9,10 @@ param(
     [string]$StageDir,
 
     [Parameter(Mandatory = $true)]
-    [string]$OutputPath
+    [string]$OutputPath,
+
+    [ValidateSet("x86_64", "arm64")]
+    [string]$Architecture = "x86_64"
 )
 
 Set-StrictMode -Version Latest
@@ -31,6 +34,7 @@ $packager = Join-Path $PSScriptRoot "package_windows_conpty.py"
 Invoke-NativeChecked python @(
     $packager,
     "stage",
+    "--architecture", $Architecture,
     "--package", $PackagePath,
     "--herdr-exe", $HerdrExe,
     "--output-dir", $StageDir
@@ -48,6 +52,7 @@ foreach ($relative in @("conpty\conpty.dll", "conpty\x64\OpenConsole.exe", "conp
 Invoke-NativeChecked python @(
     $packager,
     "archive",
+    "--architecture", $Architecture,
     "--stage-dir", $StageDir,
     "--output", $OutputPath
 )

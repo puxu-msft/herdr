@@ -35,6 +35,7 @@ class PreviewNotesTests(unittest.TestCase):
                 shas={
                     "linux-x86_64": "deadbeef",
                     "windows-x86_64": "a" * 64,
+                    "windows-aarch64": "b" * 64,
                 },
                 retain=30,
                 endpoint_generation=77,
@@ -59,6 +60,7 @@ class PreviewNotesTests(unittest.TestCase):
                 "a" * 64,
             )
             self.assertEqual(data["assets"]["windows-x86_64"]["format"], "zip")
+            self.assertEqual(data["assets"]["windows-aarch64"]["format"], "zip")
             self.assertIn("2026-06-02-abcdef123456", data["builds"])
             self.assertEqual(
                 data["builds"]["2026-06-02-abcdef123456"]["endpoint_generation"],
@@ -67,7 +69,7 @@ class PreviewNotesTests(unittest.TestCase):
 
     def test_windows_preview_asset_requires_sha256(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(ValueError, "windows-x86_64 requires"):
+            with self.assertRaisesRegex(ValueError, "windows-aarch64 requires"):
                 preview.build_manifest(
                     output=Path(tmp) / "preview.json",
                     repo="herdrdev/herdr",
@@ -78,7 +80,7 @@ class PreviewNotesTests(unittest.TestCase):
                     base_version="0.6.6",
                     protocol=12,
                     notes="test",
-                    shas={},
+                    shas={"windows-x86_64": "a" * 64},
                     retain=1,
                 )
 

@@ -86,9 +86,9 @@ nix flake update herdr
 | --- | --- |
 | Linux x86_64 | `herdr-linux-x86_64` |
 | Linux aarch64 | `herdr-linux-aarch64` |
-| macOS Intel | `herdr-macos-x86_64` |
 | macOS Apple silicon | `herdr-macos-aarch64` |
 | Windows x86_64 | `herdr-windows-x86_64.zip` |
+| Windows ARM64 | `herdr-windows-aarch64.zip` |
 
 在 Linux 或 macOS 上,赋予可执行权限并移动到 PATH 上的某个位置。
 
@@ -99,7 +99,7 @@ mv herdr-linux-x86_64 ~/.local/bin/herdr
 
 ### Windows 压缩包
 
-稳定版发布和预览版预发布都会包含 `herdr-windows-x86_64.zip`。压缩包包含 `herdr.exe` 及其应用本地 ConPTY 运行时。请保留完整的解压目录,不要只复制 `herdr.exe`。
+稳定版发布和预览版预发布都会包含与架构匹配的 Windows 压缩包。每个压缩包均包含 `herdr.exe` 及其应用本地 ConPTY 运行时。请保留完整的解压目录,不要只复制 `herdr.exe`。
 
 ## 验证
 

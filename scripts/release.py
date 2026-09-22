@@ -19,9 +19,9 @@ RELEASE_FILES = {
 ASSETS = {
     "herdr-linux-x86_64",
     "herdr-linux-aarch64",
-    "herdr-macos-x86_64",
     "herdr-macos-aarch64",
     "herdr-windows-x86_64.zip",
+    "herdr-windows-aarch64.zip",
 }
 
 

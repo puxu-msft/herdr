@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   preflight:
-    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/preview-')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/preview-')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -134,7 +134,7 @@ jobs:
 
   build:
     needs: preflight
-    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/preview-') && needs.preflight.outputs.should_publish == 'true'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/preview-') && needs.preflight.outputs.should_publish == 'true'
     permissions:
       contents: read
     strategy:
@@ -147,15 +147,17 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: herdr-linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            name: herdr-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
             name: herdr-macos-aarch64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             name: herdr-windows-x86_64.zip
+            windows_architecture: x86_64
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            name: herdr-windows-aarch64.zip
+            windows_architecture: arm64
     runs-on: ${{ matrix.os }}
     env:
       LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
@@ -259,12 +261,13 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
-          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-${{ matrix.windows_architecture }}"
           .\scripts\package_windows_conpty.ps1 `
             -HerdrExe target\${{ matrix.target }}\release\herdr.exe `
             -PackagePath $package `
             -StageDir $stage `
-            -OutputPath ${{ matrix.name }}
+            -OutputPath ${{ matrix.name }} `
+            -Architecture ${{ matrix.windows_architecture }}
           $hash = (Get-FileHash -Algorithm SHA256 ${{ matrix.name }}).Hash.ToLowerInvariant()
           "$hash  ${{ matrix.name }}" | Out-File -Encoding ascii ${{ matrix.name }}.sha256
           "commit=${{ needs.preflight.outputs.commit }}" | Out-File -Encoding utf8 BUILD_INFO.txt
@@ -283,7 +286,7 @@ jobs:
 
   publish:
     needs: [preflight, build]
-    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/preview-') && needs.preflight.outputs.should_publish == 'true'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/preview-') && needs.preflight.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     concurrency:
       group: docs-publish-master
@@ -327,6 +330,7 @@ jobs:
             --previous '${{ steps.previous-preview.outputs.range_base }}' \
             --commit '${{ needs.preflight.outputs.commit }}' \
             --build-id '${{ needs.preflight.outputs.build_id }}' \
+            --repo "$GITHUB_REPOSITORY" \
             --output PREVIEW_NOTES.md
           python3 - <<'PY'
           import json, pathlib
@@ -367,9 +371,9 @@ jobs:
           expected_assets="$(jq -S '{
             "herdr-linux-x86_64": .["linux-x86_64"],
             "herdr-linux-aarch64": .["linux-aarch64"],
-            "herdr-macos-x86_64": .["macos-x86_64"],
             "herdr-macos-aarch64": .["macos-aarch64"],
-            "herdr-windows-x86_64.zip": .["windows-x86_64"]
+            "herdr-windows-x86_64.zip": .["windows-x86_64"],
+            "herdr-windows-aarch64.zip": .["windows-aarch64"]
           }' preview-sha256.json)"
           actual_assets="$(jq -S '[
             .assets[] | select(.digest | type == "string") |
@@ -397,9 +401,9 @@ jobs:
           files: |
             artifacts/herdr-linux-x86_64/herdr-linux-x86_64
             artifacts/herdr-linux-aarch64/herdr-linux-aarch64
-            artifacts/herdr-macos-x86_64/herdr-macos-x86_64
             artifacts/herdr-macos-aarch64/herdr-macos-aarch64
             artifacts/herdr-windows-x86_64.zip/herdr-windows-x86_64.zip
+            artifacts/herdr-windows-aarch64.zip/herdr-windows-aarch64.zip
 
       - name: Publish preview prerelease
         if: steps.existing-preview.outputs.already_published != 'true'
@@ -414,6 +418,7 @@ jobs:
           node scripts/docs/preview.mjs snapshot '${{ needs.preflight.outputs.commit }}'
           python3 scripts/preview.py manifest \
             --output distribution/preview.json \
+            --repo "$GITHUB_REPOSITORY" \
             --tag '${{ needs.preflight.outputs.tag }}' \
             --build-id '${{ needs.preflight.outputs.build_id }}' \
             --commit '${{ needs.preflight.outputs.commit }}' \

@@ -14,7 +14,7 @@ env:
 
 jobs:
   validate-release-source:
-    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
       preview_commit: ${{ steps.source.outputs.preview_commit }}
@@ -48,7 +48,7 @@ jobs:
 
   flake-check:
     needs: validate-release-source
-    if: github.repository == 'herdrdev/herdr'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -72,7 +72,7 @@ jobs:
 
   build:
     needs: validate-release-source
-    if: github.repository == 'herdrdev/herdr'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
     strategy:
@@ -88,11 +88,6 @@ jobs:
             name: herdr-linux-aarch64
             libghostty_vt_optimize: ReleaseFast
             libghostty_vt_simd: 'true'
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            name: herdr-macos-x86_64
-            libghostty_vt_optimize: ReleaseFast
-            libghostty_vt_simd: 'true'
           - target: aarch64-apple-darwin
             os: macos-latest
             name: herdr-macos-aarch64
@@ -101,6 +96,13 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-2022
             name: herdr-windows-x86_64.zip
+            windows_architecture: x86_64
+            libghostty_vt_optimize: ReleaseFast
+            libghostty_vt_simd: 'true'
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            name: herdr-windows-aarch64.zip
+            windows_architecture: arm64
             libghostty_vt_optimize: ReleaseFast
             libghostty_vt_simd: 'true'
 
@@ -182,12 +184,13 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
-          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-${{ matrix.windows_architecture }}"
           .\scripts\package_windows_conpty.ps1 `
             -HerdrExe target\${{ matrix.target }}\release\herdr.exe `
             -PackagePath $package `
             -StageDir $stage `
-            -OutputPath ${{ matrix.name }}
+            -OutputPath ${{ matrix.name }} `
+            -Architecture ${{ matrix.windows_architecture }}
           $version = (& (Join-Path $stage "herdr.exe") --version | Out-String).Trim()
           $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
           if ($version -notmatch [regex]::Escape($tagVersion) -or $version -match "preview") {
@@ -202,7 +205,7 @@ jobs:
 
   validate-release-inputs:
     needs: validate-release-source
-    if: github.repository == 'herdrdev/herdr'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -231,7 +234,7 @@ jobs:
 
   release:
     needs: [build, flake-check, validate-release-inputs]
-    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -254,14 +257,14 @@ jobs:
           files: |
             herdr-linux-x86_64/herdr-linux-x86_64
             herdr-linux-aarch64/herdr-linux-aarch64
-            herdr-macos-x86_64/herdr-macos-x86_64
             herdr-macos-aarch64/herdr-macos-aarch64
             herdr-windows-x86_64.zip/herdr-windows-x86_64.zip
+            herdr-windows-aarch64.zip/herdr-windows-aarch64.zip
           body_path: RELEASE_NOTES.md
 
   update-nix-package:
     needs: release
-    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.HERDR_NIX_REPOSITORY != ''
     runs-on: ubuntu-latest
     timeout-minutes: 2
     continue-on-error: true
@@ -273,15 +276,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HERDR_NIX_DISPATCH_TOKEN }}
           GH_HOST: github.com
+          NIX_REPOSITORY: ${{ vars.HERDR_NIX_REPOSITORY }}
         run: |
-          if ! gh workflow run update-check.yml --repo herdrdev/herdr-nix --ref main; then
-            echo "::warning::Nix update could not be triggered. The Herdr release is already published; run update-check manually in herdrdev/herdr-nix."
+          if ! gh workflow run update-check.yml --repo "$NIX_REPOSITORY" --ref main; then
+            echo "::warning::Nix update could not be triggered. The release is already published; run update-check manually in $NIX_REPOSITORY."
             exit 1
           fi
 
   close-released-issues:
     needs: [release, validate-release-source]
-    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
@@ -413,7 +417,7 @@ jobs:
 
   update-latest-json:
     needs: [release, validate-release-source]
-    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     concurrency:
       group: docs-publish-master
@@ -459,7 +463,7 @@ jobs:
           if [ -s "$RUNNER_TEMP/release-preparation.patch" ]; then
             git apply --3way --index "$RUNNER_TEMP/release-preparation.patch"
           fi
-          python3 scripts/changelog.py sync-latest-json --version "$VERSION" --output distribution/latest.json --announcement "$ANNOUNCEMENT_PATH" --protocol "$RELEASE_PROTOCOL" --endpoint-generation "$RELEASE_ENDPOINT_GENERATION"
+          python3 scripts/changelog.py sync-latest-json --version "$VERSION" --output distribution/latest.json --repo "$GITHUB_REPOSITORY" --announcement "$ANNOUNCEMENT_PATH" --protocol "$RELEASE_PROTOCOL" --endpoint-generation "$RELEASE_ENDPOINT_GENERATION"
           if cmp -s "$ANNOUNCEMENT_ORIGINAL_PATH" docs/next/product-announcement.json; then
             printf 'null\n' > docs/next/product-announcement.json
           else

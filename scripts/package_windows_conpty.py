@@ -68,6 +68,10 @@ DYNAMIC_MSVC_RUNTIME_PREFIXES = (
 # msvcrt.dll is the legacy CRT that ships with Windows and is always present,
 # so depending on it does not require the Visual C++ Redistributable.
 SYSTEM_CRT_DLLS = frozenset({"msvcrt.dll"})
+HERDR_PE_MACHINES = {
+    "x86_64": 0x8664,
+    "arm64": 0xAA64,
+}
 
 
 def is_dynamic_msvc_runtime(dll: str) -> bool:
@@ -260,7 +264,15 @@ def stage_bundle(
     if not herdr_exe.is_file():
         raise ValueError(f"Herdr executable does not exist: {herdr_exe}")
 
-    validate_static_msvc_runtime(herdr_exe.read_bytes(), herdr_exe.name)
+    herdr_payload = herdr_exe.read_bytes()
+    validate_static_msvc_runtime(herdr_payload, herdr_exe.name)
+    actual_herdr_machine = pe_machine(herdr_payload)
+    expected_herdr_machine = HERDR_PE_MACHINES[architecture]
+    if actual_herdr_machine != expected_herdr_machine:
+        raise ValueError(
+            f"{herdr_exe.name} architecture mismatch for {architecture}: "
+            f"expected 0x{expected_herdr_machine:04x}, got 0x{actual_herdr_machine:04x}"
+        )
 
     acquire_package(metadata["package"], package_path)
     bundle = metadata["bundles"][architecture]
@@ -367,13 +379,13 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     stage = subparsers.add_parser("stage")
-    stage.add_argument("--architecture", choices=("x86_64",), default="x86_64")
+    stage.add_argument("--architecture", choices=tuple(HERDR_PE_MACHINES), default="x86_64")
     stage.add_argument("--package", type=Path, required=True)
     stage.add_argument("--herdr-exe", type=Path, required=True)
     stage.add_argument("--output-dir", type=Path, required=True)
 
     archive = subparsers.add_parser("archive")
-    archive.add_argument("--architecture", choices=("x86_64",), default="x86_64")
+    archive.add_argument("--architecture", choices=tuple(HERDR_PE_MACHINES), default="x86_64")
     archive.add_argument("--stage-dir", type=Path, required=True)
     archive.add_argument("--output", type=Path, required=True)
     return parser.parse_args()

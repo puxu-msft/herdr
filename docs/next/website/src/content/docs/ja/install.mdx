@@ -86,9 +86,9 @@ nix flake update herdr
 | --- | --- |
 | Linux x86_64 | `herdr-linux-x86_64` |
 | Linux aarch64 | `herdr-linux-aarch64` |
-| macOS Intel | `herdr-macos-x86_64` |
 | macOS Apple silicon | `herdr-macos-aarch64` |
 | Windows x86_64 | `herdr-windows-x86_64.zip` |
+| Windows ARM64 | `herdr-windows-aarch64.zip` |
 
 Linux または macOS では、実行可能にして PATH 上のどこかに移動します。
 
@@ -99,7 +99,7 @@ mv herdr-linux-x86_64 ~/.local/bin/herdr
 
 ### Windows アーカイブ
 
-安定版リリースとプレビュープレリリースの両方に `herdr-windows-x86_64.zip` が含まれます。アーカイブには `herdr.exe` とアプリローカルの ConPTY ランタイムが含まれます。展開したディレクトリをまとめて保持し、`herdr.exe` だけをコピーしないでください。
+安定版リリースとプレビュープレリリースには、アーキテクチャに対応した Windows アーカイブが含まれます。各アーカイブには `herdr.exe` とアプリローカルの ConPTY ランタイムが含まれます。展開したディレクトリをまとめて保持し、`herdr.exe` だけをコピーしないでください。
 
 ## 動作確認
 
