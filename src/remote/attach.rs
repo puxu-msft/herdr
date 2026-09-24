@@ -1395,6 +1395,10 @@ fn parse_windows_platform_probe(stdout: &str) -> Result<Option<RemotePlatform>, 
             os: "windows",
             arch: "x86_64",
         })),
+        "ARM64" | "AARCH64" => Ok(Some(RemotePlatform {
+            os: "windows",
+            arch: "aarch64",
+        })),
         arch => Err(format!("unsupported remote platform: Windows {arch}")),
     }
 }
@@ -4078,7 +4082,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_platform_probe_accepts_only_x86_64() {
+    fn windows_platform_probe_accepts_x86_64_and_arm64() {
         assert_eq!(
             parse_windows_platform_probe("profile noise\r\nherdr-windows:AMD64\r\n").unwrap(),
             Some(RemotePlatform {
@@ -4086,10 +4090,19 @@ mod tests {
                 arch: "x86_64",
             })
         );
+        let arm64 = parse_windows_platform_probe("herdr-windows:ARM64").unwrap();
+        assert_eq!(
+            arm64,
+            Some(RemotePlatform {
+                os: "windows",
+                arch: "aarch64",
+            })
+        );
+        assert_eq!(arm64.unwrap().asset_key(), "windows-aarch64");
         assert_eq!(parse_windows_platform_probe("other output").unwrap(), None);
         assert_eq!(
-            parse_windows_platform_probe("herdr-windows:ARM64").unwrap_err(),
-            "unsupported remote platform: Windows ARM64"
+            parse_windows_platform_probe("herdr-windows:x86").unwrap_err(),
+            "unsupported remote platform: Windows X86"
         );
     }
 
