@@ -41,7 +41,13 @@ Invoke-NativeChecked python @(
 )
 Invoke-NativeChecked dotnet @("nuget", "verify", "--all", $PackagePath)
 
-foreach ($relative in @("conpty\conpty.dll", "conpty\x64\OpenConsole.exe", "conpty\arm64\OpenConsole.exe")) {
+$conptyManifestPath = Join-Path $PSScriptRoot "..\packaging\windows\conpty.json"
+$conptyManifest = Get-Content -Raw -LiteralPath $conptyManifestPath | ConvertFrom-Json
+$signedFiles = @($conptyManifest.bundles.$Architecture.files | ForEach-Object { $_.destination -replace "/", "\" })
+if ($signedFiles.Count -eq 0) {
+    throw "No ConPTY bundle files are declared for $Architecture in $conptyManifestPath"
+}
+foreach ($relative in $signedFiles) {
     $signature = Get-AuthenticodeSignature (Join-Path $StageDir $relative)
     $subject = if ($null -eq $signature.SignerCertificate) { "" } else { $signature.SignerCertificate.Subject }
     if ($signature.Status -ne "Valid" -or $subject -notlike "*Microsoft Corporation*") {

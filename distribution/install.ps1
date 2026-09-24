@@ -387,25 +387,8 @@ function Test-HerdrReleaseComplete {
     }
 
     $conptyRoot = Join-Path $ReleaseDir "conpty"
-    if (-not (Test-RegularDirectory -Path $conptyRoot) -or
-        -not (Test-RegularDirectory -Path (Join-Path $conptyRoot "x64")) -or
-        -not (Test-RegularDirectory -Path (Join-Path $conptyRoot "arm64"))) {
-        return $false
-    }
     $markerPath = Join-Path $conptyRoot "herdr-conpty.json"
-    $required = @(
-        "conpty/conpty.dll",
-        "conpty/x64/OpenConsole.exe",
-        "conpty/arm64/OpenConsole.exe",
-        "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
-        "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md"
-    )
-    foreach ($relative in $required) {
-        if (-not (Test-RegularFile -Path (Join-Path $ReleaseDir ($relative -replace '/', '\')))) {
-            return $false
-        }
-    }
-    if (-not (Test-RegularFile -Path $markerPath)) {
+    if (-not (Test-RegularDirectory -Path $conptyRoot) -or -not (Test-RegularFile -Path $markerPath)) {
         return $false
     }
 
@@ -419,16 +402,35 @@ function Test-HerdrReleaseComplete {
         if ($null -eq $schemaProperty -or [int]$schemaProperty.Value -ne 1 -or
             $null -eq $packageProperty -or [string]$packageProperty.Value -ne "Microsoft.Windows.Console.ConPTY" -or
             $null -eq $versionProperty -or [string]::IsNullOrWhiteSpace([string]$versionProperty.Value) -or
-            $null -eq $architectureProperty -or [string]$architectureProperty.Value -ne "x86_64" -or
+            $null -eq $architectureProperty -or
             $null -eq $filesProperty) {
             return $false
         }
 
-        $expectedConptyFiles = @(
-            "conpty/conpty.dll",
-            "conpty/x64/OpenConsole.exe",
-            "conpty/arm64/OpenConsole.exe"
+        # Each package architecture has the exact bundle layout from packaging/windows/conpty.json.
+        $expectedConptyFiles = @(switch ([string]$architectureProperty.Value) {
+            "x86_64" { "conpty/conpty.dll", "conpty/x64/OpenConsole.exe", "conpty/arm64/OpenConsole.exe" }
+            "arm64" { "conpty/conpty.dll", "conpty/arm64/OpenConsole.exe" }
+        })
+        if ($expectedConptyFiles.Count -eq 0) {
+            return $false
+        }
+        $bundleDirectories = @($expectedConptyFiles | ForEach-Object { Split-Path -Parent ($_ -replace '/', '\') } | Sort-Object -Unique)
+        foreach ($directory in $bundleDirectories) {
+            if (-not (Test-RegularDirectory -Path (Join-Path $ReleaseDir $directory))) {
+                return $false
+            }
+        }
+        $required = @($expectedConptyFiles) + @(
+            "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+            "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md"
         )
+        foreach ($relative in $required) {
+            if (-not (Test-RegularFile -Path (Join-Path $ReleaseDir ($relative -replace '/', '\')))) {
+                return $false
+            }
+        }
+
         $markerFileNames = @($filesProperty.Value.PSObject.Properties | ForEach-Object { $_.Name })
         if (@(Compare-Object $expectedConptyFiles $markerFileNames).Count -ne 0) {
             return $false

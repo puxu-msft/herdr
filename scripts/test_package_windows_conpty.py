@@ -57,9 +57,9 @@ class WindowsConptyPackageTests(unittest.TestCase):
         )
         self.assertIn('"nuget", "verify", "--all"', wrapper)
         self.assertIn("Get-AuthenticodeSignature", wrapper)
-        self.assertIn('conpty\\arm64\\OpenConsole.exe', wrapper)
-        self.assertIn('conpty\\x64\\OpenConsole.exe', wrapper)
-        self.assertIn('conpty\\conpty.dll', wrapper)
+        # The signed-file list comes from the per-architecture bundle in packaging/windows/conpty.json.
+        self.assertIn('packaging\\windows\\conpty.json', wrapper)
+        self.assertIn('$conptyManifest.bundles.$Architecture.files', wrapper)
         self.assertIn('"--architecture", $Architecture', wrapper)
         self.assertIn('"*Microsoft Corporation*"', wrapper)
 
