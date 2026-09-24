@@ -1,0 +1,342 @@
+name: Fork release
+
+on:
+  push:
+    tags:
+      - "fork-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Publishing extends the previous release's manifest history, so runs must not overlap.
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      build_id: ${{ steps.plan.outputs.build_id }}
+      commit: ${{ steps.plan.outputs.commit }}
+      base_version: ${{ steps.plan.outputs.base_version }}
+      protocol: ${{ steps.plan.outputs.protocol }}
+      endpoint_generation: ${{ steps.plan.outputs.endpoint_generation }}
+      built_at: ${{ steps.plan.outputs.built_at }}
+      published: ${{ steps.plan.outputs.published }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Plan fork build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          build_id="$(git show -s --format=%cs HEAD)-${commit:0:12}"
+          tag="fork-$build_id"
+          if [ "$REF_TYPE" = "tag" ] && [ "$REF_NAME" != "$tag" ]; then
+            echo "::error::tag $REF_NAME must be $tag for commit $commit; create it with scripts/fork/publish.sh"
+            exit 1
+          fi
+          # GITHUB_TOKEN may only create tags for commits whose workflows match the default branch.
+          if [ "$REF_TYPE" = "branch" ] && [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::manual publishing only runs on $DEFAULT_BRANCH; publish $REF_NAME with scripts/fork/publish.sh"
+            exit 1
+          fi
+          published=false
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >/dev/null 2>&1; then
+            published=true
+            echo "::notice::$tag is already published; nothing to do."
+          fi
+          base_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          protocol="$(python3 -c 'import re; print(re.search(r"pub const PROTOCOL_VERSION: u32 = (\d+);", open("src/protocol/wire.rs").read()).group(1))')"
+          endpoint_generation="$(python3 -c 'import re; print(re.search(r"pub const ENDPOINT_PROTOCOL_GENERATION: u32 = (\d+);", open("src/protocol/endpoint.rs").read()).group(1))')"
+          {
+            echo "tag=$tag"
+            echo "build_id=$build_id"
+            echo "commit=$commit"
+            echo "base_version=$base_version"
+            echo "protocol=$protocol"
+            echo "endpoint_generation=$endpoint_generation"
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "published=$published"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  checks:
+    needs: plan
+    if: needs.plan.outputs.published != 'true'
+    uses: ./.github/workflows/fork-checks.yml
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.published != 'true'
+    uses: ./.github/workflows/fork-build.yml
+    with:
+      build-id: ${{ needs.plan.outputs.build_id }}
+      retention-days: 30
+
+  publish:
+    needs: [plan, checks, build]
+    if: needs.plan.outputs.published != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      BUILD_ID: ${{ needs.plan.outputs.build_id }}
+      COMMIT: ${{ needs.plan.outputs.commit }}
+      BASE_VERSION: ${{ needs.plan.outputs.base_version }}
+      PROTOCOL: ${{ needs.plan.outputs.protocol }}
+      ENDPOINT_GENERATION: ${{ needs.plan.outputs.endpoint_generation }}
+      BUILT_AT: ${{ needs.plan.outputs.built_at }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: artifacts
+
+      - name: Fetch previous fork manifest
+        run: |
+          set -euo pipefail
+          previous_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select((.draft | not) and (.tag_name | startswith("fork-")) and .tag_name != env.TAG)] | sort_by(.published_at) | last | .tag_name // ""')"
+          if [ -z "$previous_tag" ]; then
+            echo "No earlier fork release; starting a new build history."
+            exit 0
+          fi
+          gh release download "$previous_tag" --repo "$GITHUB_REPOSITORY" --pattern preview.json --dir previous
+          echo "Extending the build history of $previous_tag."
+
+      - name: Assemble release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          python3 scripts/fork/release_assets.py collect --artifacts artifacts --output release --sha-json preview-sha256.json
+          previous_commit=""
+          if [ -f previous/preview.json ]; then
+            cp previous/preview.json release/preview.json
+            previous_commit="$(jq -r '.commit // ""' previous/preview.json)"
+          fi
+          {
+            echo "Fork build $BUILD_ID"
+            echo
+            if [ -n "$previous_commit" ] && [ "$previous_commit" != "$COMMIT" ]; then
+              echo "[View changes](https://github.com/$GITHUB_REPOSITORY/compare/$previous_commit...$COMMIT)"
+            else
+              echo "Commit: https://github.com/$GITHUB_REPOSITORY/commit/$COMMIT"
+            fi
+          } > NOTES.md
+          # Remote installs look up the client's own build in this history.
+          python3 scripts/preview.py manifest \
+            --output release/preview.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --build-id "$BUILD_ID" \
+            --commit "$COMMIT" \
+            --built-at "$BUILT_AT" \
+            --base-version "$BASE_VERSION" \
+            --protocol "$PROTOCOL" \
+            --endpoint-generation "$ENDPOINT_GENERATION" \
+            --notes NOTES.md \
+            --sha-file preview-sha256.json \
+            --retain 100
+          python3 scripts/fork/release_assets.py installers --repo "$GITHUB_REPOSITORY" --manifest release/preview.json --output release
+          ls -l release
+
+      - name: Publish release
+        id: publish
+        run: |
+          set -euo pipefail
+          api="repos/$GITHUB_REPOSITORY"
+          tag_commit() {
+            local ref type sha
+            ref="$(gh api "$api/git/ref/tags/$1" 2>/dev/null)" || return 0
+            type="$(jq -r .object.type <<<"$ref")"
+            sha="$(jq -r .object.sha <<<"$ref")"
+            if [ "$type" = "tag" ]; then
+              sha="$(gh api "$api/git/tags/$sha" --jq .object.sha)"
+            fi
+            printf '%s\n' "$sha"
+          }
+
+          existing="$(tag_commit "$TAG")"
+          if [ -z "$existing" ]; then
+            gh api "$api/git/refs" -f ref="refs/tags/$TAG" -f sha="$COMMIT" >/dev/null
+            echo "Created tag $TAG at $COMMIT."
+          elif [ "$existing" != "$COMMIT" ]; then
+            echo "::error::tag $TAG points at $existing, expected $COMMIT"
+            exit 1
+          fi
+
+          # An interrupted attempt may already have published; accept it only when every asset matches this run.
+          if gh api "$api/releases/tags/$TAG" > published-release.json 2>/dev/null; then
+            python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys
+          release = json.loads(pathlib.Path("published-release.json").read_text())
+          published = {asset["name"]: asset for asset in release["assets"]}
+          local = {path.name: path for path in pathlib.Path("release").iterdir() if path.is_file()}
+          if set(published) != set(local):
+              sys.exit(f"published assets {sorted(published)} differ from this run's {sorted(local)}")
+          for name, path in sorted(local.items()):
+              digest = (published[name].get("digest") or "").removeprefix("sha256:")
+              if not digest:
+                  data = subprocess.run(
+                      ["gh", "api", "-H", "Accept: application/octet-stream",
+                       f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/assets/{published[name]['id']}"],
+                      check=True, capture_output=True,
+                  ).stdout
+                  digest = hashlib.sha256(data).hexdigest()
+              if digest != hashlib.sha256(path.read_bytes()).hexdigest():
+                  sys.exit(f"{name} in the published release does not match this run")
+          print("The published release already matches this run.")
+          PY
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          for id in $(gh api "$api/releases?per_page=100" --jq '.[] | select(.draft and .tag_name == env.TAG) | .id'); do
+            gh api -X DELETE "$api/releases/$id" >/dev/null
+            echo "Deleted draft release $id left by an earlier attempt."
+          done
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "Fork build $BUILD_ID" \
+            --notes-file NOTES.md
+          # Publishing moves releases/latest, which is where fork builds read preview.json.
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "already_published=false" >> "$GITHUB_OUTPUT"
+
+      - name: Verify published manifest
+        env:
+          ALREADY_PUBLISHED: ${{ steps.publish.outputs.already_published }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/$GITHUB_REPOSITORY/releases"
+          wait_for_build() {
+            local url="$1" attempt published
+            for attempt in 1 2 3 4 5 6; do
+              if published="$(curl -fsSL "$url" | jq -r .build_id)" && [ "$published" = "$BUILD_ID" ]; then
+                echo "$url serves $BUILD_ID."
+                return 0
+              fi
+              if [ "$attempt" != 6 ]; then
+                sleep $((attempt * 5))
+              fi
+            done
+            return 1
+          }
+          if ! wait_for_build "$base/download/$TAG/preview.json"; then
+            echo "::error::$base/download/$TAG/preview.json does not serve $BUILD_ID"
+            exit 1
+          fi
+          if ! wait_for_build "$base/latest/download/preview.json"; then
+            if [ "$ALREADY_PUBLISHED" = "true" ]; then
+              echo "::warning::$TAG was published earlier, but releases/latest now serves another build; fork updates follow releases/latest"
+            else
+              echo "::error::$TAG is published, but releases/latest does not serve $BUILD_ID yet"
+              exit 1
+            fi
+          fi
+          asset="$(curl -fsSL "$base/download/$TAG/preview.json" | jq -r '.assets["linux-x86_64"].url')"
+          curl -fsSIL "$asset" >/dev/null
+          echo "$asset is downloadable."
+
+  verify-install:
+    name: verify install (${{ matrix.name }})
+    needs: [plan, publish]
+    # Runs again for an already published tag, so installs can be re-verified by rerunning the release.
+    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.published == 'true' || needs.publish.result == 'success')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: macos-aarch64
+            os: macos-latest
+          - name: windows-x86_64
+            os: windows-latest
+            machine: "0x8664"
+          - name: windows-aarch64
+            os: windows-11-arm
+            machine: "0xAA64"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+      EXPECTED_VERSION: herdr ${{ needs.plan.outputs.base_version }}-preview.${{ needs.plan.outputs.build_id }}
+      RELEASE_DOWNLOAD: https://github.com/${{ github.repository }}/releases/download/${{ needs.plan.outputs.tag }}
+    steps:
+      # Pin the installers to this tag's manifests; the publish job verified releases/latest.
+      - name: Install with the release install.sh
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/fork-install"
+          curl -fsSL "$RELEASE_DOWNLOAD/install.sh" | HOME="$root" HERDR_INSTALL_DIR="$root/bin" HERDR_MANIFEST_URL="$RELEASE_DOWNLOAD/install-manifest.json" sh
+          version="$("$root/bin/herdr" --version)"
+          if [ "$version" != "$EXPECTED_VERSION" ]; then
+            echo "::error::installed '$version', expected '$EXPECTED_VERSION'"
+            exit 1
+          fi
+          channel="$(HERDR_CONFIG_PATH="$root/config.toml" "$root/bin/herdr" channel show)"
+          if [ "$channel" != "preview" ]; then
+            echo "::error::installed build follows '$channel' instead of preview"
+            exit 1
+          fi
+          echo "Installed $version."
+
+      - name: Install with the release install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Join-Path $env:RUNNER_TEMP "fork-install"
+          $installer = Join-Path $env:RUNNER_TEMP "fork-install.ps1"
+          Invoke-WebRequest -UseBasicParsing "$env:RELEASE_DOWNLOAD/install.ps1" -OutFile $installer
+          $env:HERDR_HOME = Join-Path $root "home"
+          $env:HERDR_INSTALL_DIR = Join-Path $root "bin"
+          $env:HERDR_MANIFEST_URL = "$env:RELEASE_DOWNLOAD/preview.json"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
+          if ($LASTEXITCODE -ne 0) {
+            throw "The release installer failed with exit code $LASTEXITCODE"
+          }
+          $exe = Join-Path $env:HERDR_INSTALL_DIR "herdr.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+          if ($machine -ne [Convert]::ToUInt16($env:EXPECTED_MACHINE, 16)) {
+            throw ("Installed herdr.exe has machine 0x{0:X4}, expected {1}" -f $machine, $env:EXPECTED_MACHINE)
+          }
+          $version = (& $exe --version | Out-String).Trim()
+          if ($version -ne $env:EXPECTED_VERSION) {
+            throw "Installed '$version', expected '$env:EXPECTED_VERSION'"
+          }
+          $env:HERDR_CONFIG_PATH = Join-Path $root "config.toml"
+          $channel = (& $exe channel show | Out-String).Trim()
+          if ($channel -ne "preview") {
+            throw "Installed build follows '$channel' instead of preview"
+          }
+          "Installed $version."

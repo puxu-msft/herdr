@@ -1,0 +1,69 @@
+name: Fork Windows installer
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/fork-windows-installer.yml"
+      - "scripts/windows_arm64_installer_test.ps1"
+      - "distribution/install.ps1"
+  push:
+    branches: ["**"]
+    paths:
+      - ".github/workflows/fork-windows-installer.yml"
+      - "scripts/windows_arm64_installer_test.ps1"
+      - "distribution/install.ps1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-windows-installer-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arm64-fallback:
+    name: ARM64 installer fallback
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      # Runs the repository installer against the upstream preview manifest. While that
+      # manifest has no Windows ARM64 asset, the installer must fall back to x86_64.
+      - name: Determine the expected architecture
+        id: expected
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $manifest = Invoke-RestMethod -UseBasicParsing "https://herdr.dev/preview.json"
+          $machine = if ($null -ne $manifest.assets.PSObject.Properties["windows-aarch64"]) {
+            Write-Output "::warning::The upstream preview manifest now includes windows-aarch64; this run covers the native path, not the x86_64 fallback."
+            "0xAA64"
+          } else {
+            "0x8664"
+          }
+          "machine=$machine" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Test installation on Windows ARM64
+        shell: powershell
+        run: .\scripts\windows_arm64_installer_test.ps1
+
+      - name: Verify the installed architecture
+        shell: pwsh
+        env:
+          EXPECTED_MACHINE: ${{ steps.expected.outputs.machine }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Join-Path $env:RUNNER_TEMP "herdr-windows-arm64-installer-test\bin\herdr.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+          if ($machine -ne [Convert]::ToUInt16($env:EXPECTED_MACHINE, 16)) {
+            throw ("Installed herdr.exe has machine 0x{0:X4}, expected {1}" -f $machine, $env:EXPECTED_MACHINE)
+          }
+          "Installed herdr.exe has the expected machine $env:EXPECTED_MACHINE."

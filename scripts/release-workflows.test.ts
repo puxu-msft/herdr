@@ -1,47 +1,70 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const load = (name: string): any =>
-  Bun.YAML.parse(readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), "utf8"));
-const preview = load("preview");
-const release = load("release");
-const adminGate = release.jobs["validate-release-source"].steps[0];
+// Fork-owned: scripts/fork/sync-upstream.sh keeps this file and the fork workflows
+// when merging upstream, whose publishing workflows do not exist in this fork.
+const workflowDir = new URL("../.github/workflows/", import.meta.url);
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const load = (name: string): any => Bun.YAML.parse(readFileSync(new URL(`${name}.yml`, workflowDir), "utf8"));
+const ci = load("fork-ci");
+const checks = load("fork-checks");
+const build = load("fork-build");
+const release = load("fork-release");
 
-describe("official publishing workflow boundaries", () => {
-  test("publishing is tag-only while normal PR CI remains enabled", () => {
-    expect(preview.on).toEqual({ push: { tags: ["preview-*"] } });
-    expect(release.on).toEqual({ push: { tags: ["v*"] } });
-    expect(load("ci").on.pull_request).toBeDefined();
+describe("fork workflows", () => {
+  test("only fork-owned workflows exist", () => {
+    const workflows = readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name));
+    expect(workflows.length).toBeGreaterThan(0);
+    expect(workflows.filter((name) => !name.startsWith("fork-"))).toEqual([]);
   });
 
-  test("preview checks do not require a workstation Windows SDK", () => {
-    const checks = preview.jobs.preflight.steps.find((step: any) => step.name === "Run checks");
-    expect(checks.run.trim().split("\n")).toEqual(["just ci", "just docs-contract-test"]);
-    expect(preview.jobs.build.strategy.matrix.include).toContainEqual({
-      target: "x86_64-pc-windows-msvc",
-      os: "windows-latest",
-      name: "herdr-windows-x86_64.zip",
-    });
-    expect(preview.jobs.publish.needs).toContain("build");
+  test("pushes and external pull requests run the shared checks on every platform", () => {
+    expect(ci.on.push.branches).toEqual(["**"]);
+    expect(ci.on.pull_request).toBeDefined();
+    expect(ci.jobs.checks.uses).toBe("./.github/workflows/fork-checks.yml");
+    expect(Object.keys(checks.on)).toEqual(["workflow_call"]);
+    expect(checks.jobs.check.strategy.matrix.include.map((entry: any) => entry.os)).toEqual([
+      "ubuntu-latest",
+      "macos-latest",
+      "windows-latest",
+      "windows-11-arm",
+    ]);
+    expect(checks.jobs["windows-package"].strategy.matrix.include.map((entry: any) => entry.architecture)).toEqual([
+      "x86_64",
+      "arm64",
+    ]);
   });
 
-  test("each publishing job rechecks both actors before using credentials", () => {
-    for (const [workflow, names] of [
-      [preview, ["preflight", "publish"]],
-      [release, ["validate-release-source", "release", "update-nix-package", "close-released-issues", "update-latest-json"]],
-    ] as const) {
-      for (const name of names) {
-        const job = workflow.jobs[name];
-        expect(job.if).toContain("github.event_name == 'push'");
-        expect(job.if).toContain("startsWith(github.ref, 'refs/tags/");
-        expect(job.steps[0]).toEqual(adminGate);
-      }
-    }
-    expect(adminGate.run).toContain('"$GITHUB_ACTOR" "$GITHUB_TRIGGERING_ACTOR"');
-    expect(adminGate.env.GH_TOKEN).toBe("${{ github.token }}");
-    expect(adminGate.run).not.toContain("ogulcancelik");
+  test("release builds exactly the assets the manifest tooling publishes", () => {
+    const python = process.platform === "win32" ? "python" : "python3";
+    const result = spawnSync(
+      python,
+      ["-c", "import json, scripts.preview as p; print(json.dumps(sorted(p.EXPECTED_ASSET_NAMES.values())))"],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    expect(result.status).toBe(0);
+    const assets = build.jobs.build.strategy.matrix.include.map((entry: any) => entry.asset).sort();
+    expect(assets).toEqual(JSON.parse(result.stdout));
+  });
+
+  test("publishing waits for checks and builds that only follow this fork", () => {
+    expect(release.on.push).toEqual({ tags: ["fork-*"] });
+    expect(release.on).toHaveProperty("workflow_dispatch");
+    expect(release.permissions).toEqual({ contents: "read" });
+    expect(release.jobs.checks.uses).toBe("./.github/workflows/fork-checks.yml");
+    expect(release.jobs.build.uses).toBe("./.github/workflows/fork-build.yml");
+    expect(release.jobs.publish.needs).toEqual(["plan", "checks", "build"]);
+    expect(release.jobs.publish.permissions).toEqual({ contents: "write" });
+    expect(release.jobs["verify-install"].needs).toEqual(["plan", "publish"]);
+
+    const env = build.jobs.build.env;
+    expect(env.HERDR_BUILD_CHANNEL).toBe("preview");
+    expect(env.HERDR_FIXED_UPDATE_CHANNEL).toBe("preview");
+    expect(env.HERDR_PREVIEW_MANIFEST_URL).toBe(
+      "https://github.com/${{ github.repository }}/releases/latest/download/preview.json",
+    );
   });
 
   test("release arguments are not interpolated into executable shell text", () => {
@@ -56,35 +79,6 @@ describe("official publishing workflow boundaries", () => {
       expect(result.status).toBe(0);
       expect(result.stdout + result.stderr).not.toContain(input);
       expect(result.stdout + result.stderr).not.toContain("unexpected-command");
-    }
-  });
-
-  test.skipIf(process.platform === "win32")("admin gate permits admins and fails closed for other roles or API errors", () => {
-    const dir = mkdtempSync("/var/tmp/herdr-admin-gate-");
-    try {
-      writeFileSync(join(dir, "gh"), `#!/bin/sh
-case "$2" in
-  */collaborators/admin-*/permission) echo admin ;;
-  */collaborators/maintainer/permission) echo maintain ;;
-  */collaborators/writer/permission) echo write ;;
-  *) exit 1 ;;
-esac
-`, { mode: 0o755 });
-      for (const [actor, trigger, succeeds] of [
-        ["admin-one", "admin-two", true],
-        ["writer", "admin-two", false],
-        ["admin-one", "writer", false],
-        ["admin-one", "maintainer", false],
-        ["admin-one", "api-error", false],
-      ] as const) {
-        const result = spawnSync("bash", ["-c", adminGate.run], {
-          env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "example/test", GITHUB_ACTOR: actor, GITHUB_TRIGGERING_ACTOR: trigger },
-          encoding: "utf8",
-        });
-        expect(result.status === 0).toBe(succeeds);
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -1,0 +1,245 @@
+name: Fork build
+
+on:
+  workflow_call:
+    inputs:
+      build-id:
+        description: Build identifier; empty derives a manual build identifier.
+        type: string
+        default: ""
+      retention-days:
+        description: Artifact retention in days.
+        type: number
+        default: 7
+      libghostty-optimize:
+        description: libghostty-vt optimize mode
+        type: string
+        default: ReleaseFast
+      libghostty-simd:
+        description: Build libghostty-vt with SIMD-accelerated code paths
+        type: string
+        default: "true"
+  workflow_dispatch:
+    inputs:
+      libghostty-optimize:
+        description: libghostty-vt optimize mode
+        type: choice
+        default: ReleaseFast
+        options:
+          - ReleaseFast
+          - ReleaseSafe
+          - ReleaseSmall
+          - Debug
+      libghostty-simd:
+        description: Build libghostty-vt with SIMD-accelerated code paths
+        type: choice
+        default: "true"
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.asset }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            asset: herdr-linux-x86_64
+            native: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            asset: herdr-linux-aarch64
+            native: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            asset: herdr-macos-aarch64
+            native: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            asset: herdr-windows-x86_64.zip
+            windows_architecture: x86_64
+            native: true
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            asset: herdr-windows-aarch64.zip
+            windows_architecture: arm64
+            native: true
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      TARGET: ${{ matrix.target }}
+      ASSET: ${{ matrix.asset }}
+      WINDOWS_ARCHITECTURE: ${{ matrix.windows_architecture }}
+      LIBGHOSTTY_VT_OPTIMIZE: ${{ inputs.libghostty-optimize || 'ReleaseFast' }}
+      LIBGHOSTTY_VT_SIMD: ${{ inputs.libghostty-simd || 'true' }}
+      HERDR_BUILD_COMMIT: ${{ github.sha }}
+      # Fork builds are rolling preview builds that only follow this fork's releases.
+      HERDR_BUILD_CHANNEL: preview
+      HERDR_FIXED_UPDATE_CHANNEL: preview
+      HERDR_PREVIEW_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/preview.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/fork-setup
+        with:
+          targets: ${{ matrix.target }}
+          components: ""
+          cargo-cache-key: build-${{ matrix.target }}
+
+      - name: Prefer official Ubuntu mirrors over Azure
+        if: runner.os == 'Linux'
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i '/azure.archive.ubuntu.com/d' /etc/apt/apt-mirrors.txt
+            cat /etc/apt/apt-mirrors.txt
+          fi
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo find /etc/apt/sources.list.d -type f \( -iname '*microsoft*' -o -iname '*azure-cli*' \) -print -delete
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools gcc-aarch64-linux-gnu crossbuild-essential-arm64
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake ninja
+
+      - name: Set Linux aarch64 linker
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Remove Zig caches
+        shell: bash
+        run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+
+      - name: Compute build identity
+        shell: bash
+        env:
+          INPUT_BUILD_ID: ${{ inputs.build-id }}
+        run: |
+          set -euo pipefail
+          build_id="$INPUT_BUILD_ID"
+          if [ -z "$build_id" ]; then
+            build_id="$(git show -s --format=%cs HEAD)-${GITHUB_SHA:0:12}-manual.$GITHUB_RUN_NUMBER"
+          fi
+          base="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "Build identity: herdr $base-preview.$build_id"
+          {
+            echo "HERDR_BUILD_ID=$build_id"
+            echo "EXPECTED_IDENTITY=$base-preview.$build_id"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          NATIVE: ${{ matrix.native }}
+        run: |
+          set -euo pipefail
+          cp "target/$TARGET/release/herdr" "$ASSET"
+          file "$ASSET" > BUILD_INFO.txt
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            ldd "$ASSET" > LDD_INFO.txt 2>&1 || true
+            cat LDD_INFO.txt >> BUILD_INFO.txt
+            grep -Eq "statically linked|not a dynamic executable" LDD_INFO.txt
+            if nm -u "$ASSET" 2>/dev/null | grep -E '(__cxa|GLIBCXX|CXXABI|_ZSt)'; then
+              echo "error: Linux artifact has unresolved C++ runtime symbols" >&2
+              exit 1
+            fi
+          fi
+          if ! LC_ALL=C grep -q -F "$HERDR_PREVIEW_MANIFEST_URL" "$ASSET"; then
+            echo "error: $ASSET does not embed $HERDR_PREVIEW_MANIFEST_URL" >&2
+            exit 1
+          fi
+          if [ "$NATIVE" = "true" ]; then
+            version="$("./$ASSET" --version)"
+            if [ "$version" != "herdr $EXPECTED_IDENTITY" ]; then
+              echo "error: built binary reports '$version', expected 'herdr $EXPECTED_IDENTITY'" >&2
+              exit 1
+            fi
+            config="$RUNNER_TEMP/stable-channel-config.toml"
+            printf '[update]\nchannel = "stable"\n' > "$config"
+            channel="$(HERDR_CONFIG_PATH="$config" "./$ASSET" channel show)"
+            if [ "$channel" != "preview" ]; then
+              echo "error: a configured stable channel resolved to '$channel' instead of the fixed preview channel" >&2
+              exit 1
+            fi
+          fi
+          python3 - <<'PY' > "$ASSET.sha256"
+          import hashlib, os, pathlib
+          path = pathlib.Path(os.environ["ASSET"])
+          print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
+          PY
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "target=$TARGET"
+            echo "identity=$EXPECTED_IDENTITY"
+            echo "libghostty_vt_optimize=$LIBGHOSTTY_VT_OPTIMIZE"
+            echo "libghostty_vt_simd=$LIBGHOSTTY_VT_SIMD"
+            echo "sha256=$(cut -d ' ' -f 1 "$ASSET.sha256")"
+          } >> BUILD_INFO.txt
+
+      - name: Package artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-$env:WINDOWS_ARCHITECTURE"
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe "target\$env:TARGET\release\herdr.exe" `
+            -PackagePath $package `
+            -StageDir $stage `
+            -OutputPath $env:ASSET `
+            -Architecture $env:WINDOWS_ARCHITECTURE
+          $exe = Join-Path $stage "herdr.exe"
+          if (-not (Select-String -LiteralPath $exe -SimpleMatch -Pattern $env:HERDR_PREVIEW_MANIFEST_URL -Quiet)) {
+            throw "$exe does not embed $env:HERDR_PREVIEW_MANIFEST_URL"
+          }
+          $version = (& $exe --version | Out-String).Trim()
+          if ($version -ne "herdr $env:EXPECTED_IDENTITY") {
+            throw "Packaged Windows binary reports '$version', expected 'herdr $env:EXPECTED_IDENTITY'"
+          }
+          $config = Join-Path $env:RUNNER_TEMP "stable-channel-config.toml"
+          Set-Content -LiteralPath $config -Value "[update]`nchannel = `"stable`"" -Encoding ascii
+          $env:HERDR_CONFIG_PATH = $config
+          $channel = (& $exe channel show | Out-String).Trim()
+          Remove-Item Env:HERDR_CONFIG_PATH
+          if ($channel -ne "preview") {
+            throw "A configured stable channel resolved to '$channel' instead of the fixed preview channel"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 $env:ASSET).Hash.ToLowerInvariant()
+          "$hash  $env:ASSET" | Out-File -Encoding ascii "$env:ASSET.sha256"
+          @(
+            "commit=$env:GITHUB_SHA",
+            "target=$env:TARGET",
+            "identity=$env:EXPECTED_IDENTITY",
+            "libghostty_vt_optimize=$env:LIBGHOSTTY_VT_OPTIMIZE",
+            "libghostty_vt_simd=$env:LIBGHOSTTY_VT_SIMD",
+            "sha256=$hash"
+          ) | Out-File -Encoding utf8 BUILD_INFO.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+            BUILD_INFO.txt
+          retention-days: ${{ inputs.retention-days || 7 }}
+          if-no-files-found: error

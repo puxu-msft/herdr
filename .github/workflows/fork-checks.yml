@@ -1,0 +1,244 @@
+name: Fork checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  # Keep file/line backtraces without generating type and variable debug information.
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
+  # Persist both Zig caches; local build outputs otherwise stay in the uncached vendor tree.
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
+  ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
+
+jobs:
+  check:
+    name: check (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            nextest_filter: all()
+          - name: macos
+            os: macos-latest
+            nextest_filter: not binary(live_handoff)
+          - name: windows-x64
+            os: windows-latest
+            targets: x86_64-pc-windows-msvc
+          - name: windows-arm64
+            os: windows-11-arm
+            targets: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/fork-setup
+        with:
+          targets: ${{ matrix.targets }}
+          tools: just,cargo-nextest
+          bun: "true"
+          cargo-cache-key: check-${{ matrix.name }}
+          zig-cache-key: zig-build-v1-check-${{ matrix.name }}-0.16.0
+
+      # Save before rust-cache's post-step removes incremental state. Cargo still
+      # rebuilds workspace targets; only rustc's validated query state is retained.
+      - name: Restore Windows incremental compiler state
+        if: runner.os == 'Windows'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/debug/incremental
+          key: fork-incremental-v1-${{ matrix.name }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ env.CARGO_PROFILE_TEST_DEBUG }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'build.rs') }}-${{ github.sha }}
+          restore-keys: |
+            fork-incremental-v1-${{ matrix.name }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ env.CARGO_PROFILE_TEST_DEBUG }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'build.rs') }}-
+
+      - name: Run Linux lint
+        if: runner.os == 'Linux'
+        run: just lint
+
+      - name: Test fork tooling
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m unittest scripts.fork.test_release_assets
+          shellcheck scripts/fork/*.sh
+
+      - name: Run Linux tests
+        if: runner.os == 'Linux'
+        run: CARGO_INCREMENTAL=1 just ci-tests '${{ matrix.nextest_filter }}'
+
+      - name: Check scalar libghostty with runtime safety
+        if: runner.os == 'Linux'
+        env:
+          LIBGHOSTTY_VT_SIMD: "false"
+          LIBGHOSTTY_VT_OPTIMIZE: ReleaseSafe
+        run: CARGO_INCREMENTAL=1 just test-one ghostty
+
+      - name: Run macOS checks
+        if: runner.os == 'macOS'
+        run: just ci '${{ matrix.nextest_filter }}'
+
+      - name: Run Windows checks
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CARGO_INCREMENTAL = "1"
+          just check
+
+      - name: Smoke ConPTY pane
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Join-Path $PWD "target\debug\herdr.exe"
+          .\scripts\windows_smoke_conpty_path.ps1 -ExePath $exe -Session "fork-ci-${{ matrix.name }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+
+  windows-package:
+    name: windows package (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            architecture: x86_64
+            asset: herdr-windows-x86_64.zip
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            architecture: arm64
+            asset: herdr-windows-aarch64.zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/fork-setup
+        with:
+          targets: ${{ matrix.target }}
+          components: ""
+          cargo-cache-key: package-${{ matrix.architecture }}
+          zig-cache-key: zig-build-v1-package-${{ matrix.architecture }}-0.16.0
+
+      - name: Build Herdr
+        run: cargo build --locked --target ${{ matrix.target }}
+
+      # vendor/portable-pty only loads the app-local ConPTY bundle on x86_64; ARM64 uses the system ConPTY.
+      - name: Verify invalid bundle is rejected and system override recovers
+        if: matrix.architecture == 'x86_64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Remove-Item Env:HERDR_SOCKET_PATH, Env:HERDR_CLIENT_SOCKET_PATH -ErrorAction SilentlyContinue
+          $exe = Join-Path $PWD "target\${{ matrix.target }}\debug\herdr.exe"
+          $bundle = Join-Path (Split-Path -Parent $exe) "conpty"
+          New-Item -ItemType Directory -Force -Path (Join-Path $bundle "x64"), (Join-Path $bundle "arm64") | Out-Null
+          Set-Content -LiteralPath (Join-Path $bundle "herdr-conpty.json") -Value "{}" -Encoding ascii
+          [System.IO.File]::WriteAllBytes((Join-Path $bundle "conpty.dll"), [byte[]](0x48, 0x45, 0x52, 0x44, 0x52))
+          [System.IO.File]::WriteAllBytes((Join-Path $bundle "x64\OpenConsole.exe"), [byte[]](0x48, 0x45, 0x52, 0x44, 0x52))
+          [System.IO.File]::WriteAllBytes((Join-Path $bundle "arm64\OpenConsole.exe"), [byte[]](0x48, 0x45, 0x52, 0x44, 0x52))
+          try {
+            $rejected = $false
+            try {
+              .\scripts\windows_smoke_conpty_path.ps1 `
+                -ExePath $exe `
+                -Session "fork-conpty-invalid-${{ matrix.architecture }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+            } catch {
+              if ($_.Exception.Message -notlike "workspace create failed with exit code*") {
+                throw
+              }
+              $rejected = $true
+            }
+            if (-not $rejected) {
+              throw "Herdr accepted a tampered app-local ConPTY bundle"
+            }
+
+            $env:HERDR_WINDOWS_CONPTY = "system"
+            .\scripts\windows_smoke_conpty_path.ps1 `
+              -ExePath $exe `
+              -Session "fork-conpty-system-${{ matrix.architecture }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          } finally {
+            Remove-Item Env:HERDR_WINDOWS_CONPTY -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $bundle -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Build and verify official ConPTY package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-${{ matrix.architecture }}"
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe target\${{ matrix.target }}\debug\herdr.exe `
+            -PackagePath $package `
+            -StageDir $stage `
+            -OutputPath artifacts\${{ matrix.asset }} `
+            -Architecture ${{ matrix.architecture }}
+          "HERDR_CONPTY_PACKAGE_DIR=$stage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Probe enhanced pane input with bundled ConPTY
+        if: matrix.architecture == 'x86_64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Join-Path $env:HERDR_CONPTY_PACKAGE_DIR "herdr.exe"
+          $consoleHost = Join-Path $env:HERDR_CONPTY_PACKAGE_DIR "conpty\x64\OpenConsole.exe"
+          .\scripts\windows_conpty_enhanced_input_probe.ps1 `
+            -ExePath $exe `
+            -Session "fork-conpty-bundled-${{ matrix.architecture }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" `
+            -ExpectedConsoleHostPath $consoleHost
+
+      # Local package mode is the path `herdr update` uses with the installer embedded in the binary.
+      - name: Install the ARM64 package with the repository installer
+        if: matrix.architecture == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = (Resolve-Path "artifacts\${{ matrix.asset }}").Path
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          $root = Join-Path $env:RUNNER_TEMP "fork-local-package-install"
+          $env:HERDR_HOME = Join-Path $root "home"
+          $installDir = Join-Path $root "bin"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\distribution\install.ps1 `
+            -InstallDir $installDir `
+            -LocalPackagePath $archive `
+            -LocalPackageFormat zip `
+            -LocalPackageIdentity "0.0.0-preview.local-package" `
+            -LocalPackageSha256 $hash
+          if ($LASTEXITCODE -ne 0) {
+            throw "The installer rejected the ARM64 package with exit code $LASTEXITCODE"
+          }
+          $exe = Join-Path $installDir "herdr.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+          if ($machine -ne 0xAA64) {
+            throw ("Installed herdr.exe has machine 0x{0:X4}, expected 0xAA64" -f $machine)
+          }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "The installed ARM64 herdr.exe failed with exit code $LASTEXITCODE"
+          }
+
+      # The installer test hardcodes the x86_64 asset names and console host directory.
+      - name: Test packaged installer and repair with Windows PowerShell 5.1
+        if: matrix.architecture == 'x86_64'
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+            .\scripts\windows_install_conpty_package_test.ps1 `
+            -ArchivePath artifacts\${{ matrix.asset }}
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows PowerShell installer test failed with exit code $LASTEXITCODE"
+          }
