@@ -161,6 +161,15 @@ fn channel_set(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
+    if let Some(fixed) = crate::build_info::fixed_update_channel() {
+        if channel != fixed {
+            eprintln!(
+                "this Herdr build only follows its {fixed} update channel; install Herdr from another distribution to use {channel}."
+            );
+            return Ok(1);
+        }
+    }
+
     if let Some(reason) = channel_set_rejection(
         channel,
         crate::update::preview_channel_rejection_for_current_install(),

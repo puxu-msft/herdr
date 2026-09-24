@@ -2,6 +2,31 @@
 
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Update manifests read by `herdr update` and remote installs. Builds that
+/// publish their own releases (for example a fork) override them at build time.
+pub const STABLE_UPDATE_MANIFEST_URL: &str = manifest_url(
+    option_env!("HERDR_STABLE_MANIFEST_URL"),
+    "https://herdr.dev/latest.json",
+);
+pub const PREVIEW_UPDATE_MANIFEST_URL: &str = manifest_url(
+    option_env!("HERDR_PREVIEW_MANIFEST_URL"),
+    "https://herdr.dev/preview.json",
+);
+
+const fn manifest_url(value: Option<&'static str>, default: &'static str) -> &'static str {
+    match value {
+        Some(url) if !url.is_empty() => url,
+        _ => default,
+    }
+}
+
+/// Build-time fixed update channel; `build.rs` only accepts `stable` or `preview`.
+/// Builds that set it ignore the configured channel, so a distribution that
+/// publishes a single channel never follows another distribution's manifests.
+pub fn fixed_update_channel() -> Option<&'static str> {
+    non_empty(option_env!("HERDR_FIXED_UPDATE_CHANNEL"))
+}
+
 pub fn channel() -> &'static str {
     non_empty(option_env!("HERDR_BUILD_CHANNEL")).unwrap_or("stable")
 }

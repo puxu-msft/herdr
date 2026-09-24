@@ -31,6 +31,7 @@ impl UpdateChannelConfig {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
+    #[serde(deserialize_with = "deserialize_update_channel")]
     pub channel: UpdateChannelConfig,
     pub version_check: bool,
     pub manifest_check: bool,
@@ -47,7 +48,26 @@ impl Default for UpdateConfig {
 }
 
 fn default_update_channel() -> UpdateChannelConfig {
-    default_update_channel_for_build(cfg!(windows), crate::build_info::is_preview())
+    fixed_update_channel(crate::build_info::fixed_update_channel()).unwrap_or_else(|| {
+        default_update_channel_for_build(cfg!(windows), crate::build_info::is_preview())
+    })
+}
+
+fn deserialize_update_channel<'de, D>(deserializer: D) -> Result<UpdateChannelConfig, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let configured = UpdateChannelConfig::deserialize(deserializer)?;
+    Ok(fixed_update_channel(crate::build_info::fixed_update_channel()).unwrap_or(configured))
+}
+
+fn fixed_update_channel(value: Option<&str>) -> Option<UpdateChannelConfig> {
+    match value? {
+        "stable" => Some(UpdateChannelConfig::Stable),
+        "preview" => Some(UpdateChannelConfig::Preview),
+        // build.rs rejects any other HERDR_FIXED_UPDATE_CHANNEL value.
+        _ => None,
+    }
 }
 
 fn default_update_channel_for_build(is_windows: bool, is_preview: bool) -> UpdateChannelConfig {
@@ -1331,6 +1351,19 @@ manifest_check = false
             default_update_channel_for_build(false, true),
             UpdateChannelConfig::Stable
         );
+    }
+
+    #[test]
+    fn fixed_update_channel_parses_known_channels() {
+        assert_eq!(
+            fixed_update_channel(Some("preview")),
+            Some(UpdateChannelConfig::Preview)
+        );
+        assert_eq!(
+            fixed_update_channel(Some("stable")),
+            Some(UpdateChannelConfig::Stable)
+        );
+        assert_eq!(fixed_update_channel(None), None);
     }
 
     #[test]
