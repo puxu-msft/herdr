@@ -170,3 +170,36 @@ just test-one clear_pane
 just maintenance-test
 just check
 ```
+
+## 0007 avoid compiler-rt conflicts on Windows ARM64
+
+status: active
+
+patch: `vendor/patches/libghostty-vt/0007-avoid-windows-arm64-compiler-rt-conflict.patch`
+
+herdr issue: none; fixes the Windows ARM64 fork CI linker failure
+
+upstream discussion: not opened
+
+upstream pr: not opened
+
+vendored base: `44f2a44df7e8c4a0c6df3f7d872ef3d7ead88e51`
+
+local files:
+
+- `vendor/libghostty-vt/src/build/GhosttyLibVt.zig`
+
+reason: Static libghostty-vt bundles Zig's compiler-rt by default.
+On Windows ARM64, Zig's `compiler_rt.obj` and Rust's `compiler_builtins` both define weak `__udivti3` aliases with different defaults, so the MSVC linker fails with LNK1227 when linking Rust test binaries.
+Rust provides `__udivti3` for Herdr's executable; omit only the duplicate Zig runtime for `aarch64-windows-msvc`.
+Other targets retain the original bundle.
+
+remove when: the vendored Zig toolchain or libghostty-vt can bundle compiler-rt on Windows ARM64 without conflicting with Rust's `compiler_builtins`, and both the Windows ARM64 Rust tests and release build link without this patch.
+
+verification:
+
+```sh
+just maintenance-test
+# On a Windows ARM64 runner: just check
+# On a Windows ARM64 runner: cargo build --release --locked --target aarch64-pc-windows-msvc
+```

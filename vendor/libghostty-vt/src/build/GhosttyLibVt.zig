@@ -237,11 +237,11 @@ fn initLib(
     );
 
     if (kind == .static) {
-        // These must be bundled since we're compiling into a static lib.
-        // Otherwise, you get undefined symbol errors. This could cause
-        // problems if you're linking multiple static Zig libraries but
-        // we'll cross that bridge when we get to it.
-        lib.bundle_compiler_rt = true;
+        // Rust provides __udivti3 on Windows ARM64 through compiler_builtins.
+        // Bundling Zig's compiler_rt adds a conflicting weak alias (LNK1227).
+        lib.bundle_compiler_rt = !(target.result.os.tag == .windows and
+            target.result.abi == .msvc and
+            target.result.cpu.arch == .aarch64);
         lib.bundle_ubsan_rt = true;
 
         // Enable PIC so the static library can be linked into PIE
