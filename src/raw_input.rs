@@ -2820,8 +2820,13 @@ mod tests {
         ));
 
         assert!(framer.push(b"\x1b").is_empty());
-        assert!(framer.flush_timeout().is_empty());
-        assert_eq!(framer.flush_timeout(), vec![b"\x1b".to_vec()]);
+        let first_flush = framer.flush_timeout();
+        if crate::platform::should_query_host_terminal_palette() {
+            assert!(first_flush.is_empty());
+            assert_eq!(framer.flush_timeout(), vec![b"\x1b".to_vec()]);
+        } else {
+            assert_eq!(first_flush, vec![b"\x1b".to_vec()]);
+        }
     }
 
     #[test]

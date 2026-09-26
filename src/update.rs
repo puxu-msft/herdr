@@ -3710,9 +3710,13 @@ mod tests {
             true
         ));
 
-        let with_windows: UpdateManifest = serde_json::from_str(
-            r#"{"version":"9.9.9","notes":"notes","assets":{"windows-x86_64":"https://example.com/herdr-windows-x86_64.zip"},"announcement":null}"#,
-        )
+        let asset_key = format!("windows-{}", platform_target().1);
+        let with_windows: UpdateManifest = serde_json::from_value(serde_json::json!({
+            "version": "9.9.9",
+            "notes": "notes",
+            "assets": { (asset_key): "https://example.com/herdr-windows.zip" },
+            "announcement": null
+        }))
         .unwrap();
         assert!(!first_windows_stable_is_pending(&with_windows, true, true));
     }
