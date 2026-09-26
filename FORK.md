@@ -19,6 +19,7 @@ This fork (`puxu-msft/herdr`) tracks upstream [herdrdev/herdr](https://github.co
 | `fork-release.yml` | Push of a `fork-*` tag, manual run on `master` | Checks and builds, GitHub release publishing, install checks on every native platform |
 
 Shared toolchain setup lives in `.github/actions/fork-setup`. Rust follows `rust-toolchain.toml`; the Zig and Bun versions and pinned action revisions are set in that action and the fork workflows.
+Windows ARM64 runners use the x64 Zig 0.16.0 executable under Windows emulation to cross-compile the ARM64 target because native Zig 0.16.0 crashes on those runners. The setup action checks its archive against a pinned SHA-256 digest.
 
 ## Publishing a build
 
