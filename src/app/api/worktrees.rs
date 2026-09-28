@@ -2123,6 +2123,11 @@ mod tests {
                 "HEAD",
             ],
         );
+        assert_eq!(
+            crate::worktree::checkout_has_dirty_files(&checkout, false),
+            Ok(false),
+            "new linked checkout must be clean before worktree removal"
+        );
 
         let mut app = test_app();
         let mut child = Workspace::test_new("child");
