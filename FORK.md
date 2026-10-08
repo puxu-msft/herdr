@@ -40,6 +40,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/puxu-msft/herdr/re
 Fork builds are rolling preview builds (`herdr --version` prints `<version>-preview.<date>-<sha12>`) fixed to this fork's preview channel. `herdr update`, background update checks, and SSH remote installs read this fork's manifest regardless of any `[update] channel` setting, and `herdr channel set stable` is rejected. To return to upstream Herdr, run the upstream installer.
 
 Windows ARM64 builds are native. The vendored `portable-pty` loads the bundled app-local ConPTY only on x86_64, so ARM64 uses the system ConPTY.
+On Windows, `just build` also stages the pinned ConPTY bundle next to Cargo's executable and selects its architecture from the executable's PE header.
 
 The fork behavior comes from build-time variables that `build.rs` validates; builds without them keep upstream behavior:
 
@@ -62,3 +63,4 @@ Run `scripts/fork/sync-upstream.sh` on a clean tree. It fetches `herdrdev/herdr`
 Review the reported patch and drift, run `just check`, then push.
 
 Fork changes to shared upstream files are the usual merge conflicts to expect: `build.rs`, `src/build_info.rs`, `src/update.rs`, `src/remote/attach.rs`, `src/config/model.rs`, `src/cli.rs`, `.cargo/config.toml`, `distribution/install.ps1`, and `scripts/package_windows_conpty.ps1`.
+The native terminal binding and its Zig build now live in `crates/ghostty-vt/`; root `build.rs` retains the fork distribution overrides. Keep the Windows ARM64 compiler-rt patch in `vendor/libghostty-vt.patches.md` when refreshing the vendored library.

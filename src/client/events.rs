@@ -17,6 +17,8 @@ pub(super) enum ClientLoopEvent {
         kitty_graphics: bool,
         synchronized_output: bool,
     },
+    #[cfg(windows)]
+    NotificationActivated(shell::ClientSystemNotificationTarget),
     Resize(u16, u16, u32, u32, bool),
     TerminalUnavailable(io::Error),
     ServerMessage {
