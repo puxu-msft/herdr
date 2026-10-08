@@ -155,16 +155,7 @@ impl Drop for RegistryKey {
 }
 
 fn register(executable: &std::path::Path, scheme: &str) -> io::Result<()> {
-    let parent = executable
-        .parent()
-        .ok_or_else(|| io::Error::other("missing executable directory"))?;
-    let host = parent.join("conpty/x64/OpenConsole.exe");
-    if !host.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Windows notification activation requires the bundled ConPTY runtime",
-        ));
-    }
+    let host = notification_activation_host(executable, std::env::consts::ARCH)?;
     let identity = RegistryKey::create(&format!(r"Software\Classes\AppUserModelId\{APP_ID}"))?;
     identity.set("DisplayName", "Herdr")?;
     // Unpackaged protocol toasts use a stub activator; no COM server is installed.
@@ -181,6 +172,36 @@ fn register(executable: &std::path::Path, scheme: &str) -> io::Result<()> {
             executable.display()
         ),
     )
+}
+
+fn notification_activation_host(
+    executable: &std::path::Path,
+    architecture: &str,
+) -> io::Result<std::path::PathBuf> {
+    let parent = executable
+        .parent()
+        .ok_or_else(|| io::Error::other("missing executable directory"))?;
+    let host_architecture = match architecture {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("unsupported Windows notification activation architecture: {architecture}"),
+            ));
+        }
+    };
+    let host = parent
+        .join("conpty")
+        .join(host_architecture)
+        .join("OpenConsole.exe");
+    if !host.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Windows notification activation requires the bundled ConPTY runtime",
+        ));
+    }
+    Ok(host)
 }
 
 fn activation_message() -> u32 {
@@ -459,6 +480,69 @@ pub(crate) fn maybe_activate_desktop_notification(args: &[String]) -> Option<io:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_activation_host_uses_build_architecture_bundle() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr notification host 测试 {}",
+            std::process::id()
+        ));
+        let executable = root.join("Herdr app.exe");
+        let x64 = root.join("conpty").join("x64").join("OpenConsole.exe");
+        let arm64 = root.join("conpty").join("arm64").join("OpenConsole.exe");
+        std::fs::create_dir_all(x64.parent().expect("x64 parent")).expect("create x64 fixture");
+        std::fs::create_dir_all(arm64.parent().expect("arm64 parent"))
+            .expect("create arm64 fixture");
+        std::fs::write(&x64, []).expect("create x64 host");
+        std::fs::write(&arm64, []).expect("create arm64 host");
+
+        assert_eq!(
+            notification_activation_host(&executable, "x86_64").expect("x64 host"),
+            x64
+        );
+        assert_eq!(
+            notification_activation_host(&executable, "aarch64").expect("arm64 host"),
+            arm64
+        );
+        std::fs::remove_file(&x64).expect("remove x64 host");
+        assert_eq!(
+            notification_activation_host(&executable, "aarch64").expect("ARM-only host"),
+            arm64
+        );
+        assert_eq!(
+            notification_activation_host(&executable, "x86_64")
+                .expect_err("x64 host must be absent from an ARM-only bundle")
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn notification_activation_host_rejects_unknown_or_missing_bundle() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-notification-host-missing-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        let executable = root.join("herdr.exe");
+
+        assert_eq!(
+            notification_activation_host(&executable, "riscv64")
+                .expect_err("unknown architecture must fail")
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            notification_activation_host(&executable, "x86_64")
+                .expect_err("missing host must fail")
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
 
     #[test]
     fn replacement_preserves_issued_click_and_uses_latest_callback() {
