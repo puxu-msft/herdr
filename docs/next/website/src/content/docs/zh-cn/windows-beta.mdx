@@ -115,7 +115,9 @@ Windows 终端并不都以相同形式报告带修饰键的按键。Herdr 在 Wi
 
 Herdr 的窗格文本复制在 Windows 上可用。在窗格内拖选文本即可通过 Herdr 复制。
 
-文本粘贴请在 Windows Terminal 中使用 `ctrl+shift+v`。多行文本粘贴是带括号的 (bracketed),因此 shell 和智能体提示符会把它作为一次粘贴接收,而不是逐行提交。按住 `shift` 再右键,可以使用外层终端的粘贴操作,而不把点击发给 Herdr。
+在窗格中粘贴文本，请在 Windows Terminal 使用 `ctrl+shift+v`。Herdr 将多行文本保留为一个粘贴事件，并在目标程序启用括号粘贴模式（bracketed paste）时添加相应标记；未启用时，按目标程序通常的换行行为处理。按住 `shift` 再右键，可以使用外层终端的粘贴操作，而不把点击发给 Herdr。
+
+重命名、导航搜索、复制模式搜索等 Herdr 可编辑输入框，在终端转发快捷键时，也能通过 `ctrl+v` 或 `ctrl+shift+v` 读取 Windows 剪贴板文本。原生文本复制使用 Windows CRLF 换行并保留 Unicode。复制反馈在写入后显示：`copied to clipboard` 表示原生写入成功或已有相同文本；`copy request sent to terminal` 表示仅转发了 OSC 52 请求，尚无宿主剪贴板更新的确认。
 
 ## Windows 不支持
 

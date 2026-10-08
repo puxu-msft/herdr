@@ -93,6 +93,12 @@ jobs:
           $env:CARGO_INCREMENTAL = "1"
           just check
 
+      # This one ignored test writes synthetic text only in the disposable CI clipboard.
+      - name: Check native Windows text clipboard
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo nextest run --locked --run-ignored only -E 'test(windows_native_text_clipboard_roundtrip)' --status-level fail --final-status-level fail --failure-output final --success-output never
+
       - name: Smoke ConPTY pane
         if: runner.os == 'Windows'
         shell: pwsh

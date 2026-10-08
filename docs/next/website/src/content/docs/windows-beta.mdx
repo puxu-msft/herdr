@@ -128,7 +128,9 @@ Windows packages include Microsoft's current app-local ConPTY runtime because th
 
 Herdr's pane text copy works on Windows. Drag-select text inside a pane to copy through Herdr.
 
-For text paste, use `ctrl+shift+v` in Windows Terminal. Multiline text paste is bracketed so shells and agent prompts receive it as one paste instead of submitting each line separately. Hold `shift` and right-click to use the outer terminal paste action instead of sending the click through Herdr.
+For pane text paste, use `ctrl+shift+v` in Windows Terminal. Herdr keeps multiline text as one paste event and adds bracketed-paste markers when the target program enables that mode; otherwise, the program's normal newline handling applies. Hold `shift` and right-click to use the outer terminal paste action instead of sending the click through Herdr.
+
+Editable Herdr fields such as rename, navigator search, and copy-mode search can also read Windows clipboard text with `ctrl+v` or `ctrl+shift+v` when the terminal forwards the shortcut. Native text copies use Windows CRLF line endings and preserve Unicode. Copy feedback is shown after the write: `copied to clipboard` means a native write or matching existing text, while `copy request sent to terminal` means an OSC 52 request was forwarded without a clipboard acknowledgment.
 
 Windows clients also recover text when WezTerm wraps a complete sequence of Win32 character press/release pairs in raw paste markers. Mixed text and incomplete reports are not decoded by this compatibility rule. Literal clipboard text consisting entirely of matching Win32 reports is indistinguishable from this encoding and is decoded too.
 

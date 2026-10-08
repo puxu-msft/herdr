@@ -414,6 +414,10 @@ mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::*;
 
+#[cfg(all(test, not(windows)))]
+#[path = "windows/clipboard.rs"]
+mod windows_clipboard_contract_tests;
+
 #[cfg(not(windows))]
 pub(crate) use process_cwd as pane_process_cwd;
 

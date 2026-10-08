@@ -206,7 +206,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
             text: "LIV".into(),
         }),
     );
-    assert!(repaint);
+    assert!(!repaint);
     assert!(matches!(
         &actions[..],
         [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"LIV"
@@ -216,7 +216,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
             .copy_feedback
             .as_ref()
             .map(|feedback| feedback.message.as_str()),
-        Some("copied to clipboard")
+        None
     );
 }
 
@@ -224,7 +224,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
 fn clipboard_feedback_is_client_local_and_respects_config() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     let now = std::time::Instant::now();
-    assert!(state.show_copy_feedback(now));
+    assert!(state.show_copy_feedback(crate::selection::ClipboardWriteResult::Written, now));
     assert_eq!(
         state
             .copy_feedback
@@ -240,9 +240,42 @@ fn clipboard_feedback_is_client_local_and_respects_config() {
     state.config.clipboard_toast_enabled = false;
     state.copy_feedback = None;
     state.copy_feedback_deadline = None;
-    assert!(!state.show_copy_feedback(now));
+    assert!(!state.show_copy_feedback(crate::selection::ClipboardWriteResult::Written, now));
     assert!(state.copy_feedback.is_none());
     assert!(state.copy_feedback_deadline.is_none());
+}
+
+#[test]
+fn clipboard_feedback_distinguishes_local_completion_from_terminal_requests() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let now = std::time::Instant::now();
+    for (result, message) in [
+        (
+            crate::selection::ClipboardWriteResult::Written,
+            "copied to clipboard",
+        ),
+        (
+            crate::selection::ClipboardWriteResult::Unchanged,
+            "copied to clipboard",
+        ),
+        (
+            crate::selection::ClipboardWriteResult::Forwarded,
+            "copy request sent to terminal",
+        ),
+        (
+            crate::selection::ClipboardWriteResult::Failed,
+            "clipboard copy failed",
+        ),
+    ] {
+        assert!(state.show_copy_feedback(result, now));
+        assert_eq!(
+            state
+                .copy_feedback
+                .as_ref()
+                .map(|feedback| feedback.message.as_str()),
+            Some(message)
+        );
+    }
 }
 
 #[test]

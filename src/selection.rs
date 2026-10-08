@@ -352,27 +352,38 @@ fn should_prefer_osc52() -> bool {
     )
 }
 
-/// Write clipboard bytes to the system clipboard via native platform tools or OSC 52.
-///
-/// OSC 52 format: `ESC ] 52 ; c ; <base64> BEL`
-///
-/// Some terminals still only honor BEL-terminated OSC 52 writes, so herdr
-/// emits BEL here even though ST works in newer emulators.
-///
-/// Returns false when the clipboard already holds the same text or output fails.
-pub fn write_osc52_bytes(bytes: &[u8]) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClipboardWriteResult {
+    Written,
+    Unchanged,
+    Forwarded,
+    Failed,
+}
+
+/// Write clipboard bytes through the native adapter or a BEL-terminated OSC 52 request.
+/// A forwarded request does not acknowledge that the terminal updated its clipboard.
+pub(crate) fn write_osc52_bytes(bytes: &[u8]) -> ClipboardWriteResult {
     let prefer_osc52 = should_prefer_osc52();
     if !prefer_osc52 && crate::platform::clipboard_text_matches(bytes) == Some(true) {
         tracing::debug!(bytes = bytes.len(), "suppressed duplicate clipboard write");
-        return false;
+        return ClipboardWriteResult::Unchanged;
     }
 
     if !prefer_osc52 && crate::platform::write_clipboard(bytes) {
-        true
+        ClipboardWriteResult::Written
     } else {
         let sequence = osc52_sequence(bytes);
         let mut stdout = std::io::stdout();
-        stdout.write_all(sequence.as_bytes()).is_ok() && stdout.flush().is_ok()
+        match stdout
+            .write_all(sequence.as_bytes())
+            .and_then(|()| stdout.flush())
+        {
+            Ok(()) => ClipboardWriteResult::Forwarded,
+            Err(err) => {
+                tracing::warn!(%err, "failed to forward clipboard copy to the terminal");
+                ClipboardWriteResult::Failed
+            }
+        }
     }
 }
 

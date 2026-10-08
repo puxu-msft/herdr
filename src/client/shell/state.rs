@@ -1822,12 +1822,22 @@ impl ClientShellState {
         }
     }
 
-    pub(crate) fn show_copy_feedback(&mut self, now: std::time::Instant) -> bool {
+    pub(crate) fn show_copy_feedback(
+        &mut self,
+        result: crate::selection::ClipboardWriteResult,
+        now: std::time::Instant,
+    ) -> bool {
         if !self.config.clipboard_toast_enabled {
             return false;
         }
+        let message = match result {
+            crate::selection::ClipboardWriteResult::Written
+            | crate::selection::ClipboardWriteResult::Unchanged => "copied to clipboard",
+            crate::selection::ClipboardWriteResult::Forwarded => "copy request sent to terminal",
+            crate::selection::ClipboardWriteResult::Failed => "clipboard copy failed",
+        };
         self.copy_feedback = Some(crate::app::state::CopyFeedback {
-            message: "copied to clipboard".to_owned(),
+            message: message.to_owned(),
         });
         self.copy_feedback_deadline = Some(now + std::time::Duration::from_secs(2));
         true
