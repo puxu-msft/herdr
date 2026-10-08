@@ -493,7 +493,8 @@ use windows_sys::{
                 OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread,
                 TerminateProcess, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS,
                 PROCESS_BASIC_INFORMATION, PROCESS_QUERY_INFORMATION,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ, THREAD_SUSPEND_RESUME,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_READ,
+                THREAD_SUSPEND_RESUME,
             },
         },
         UI::{
@@ -2645,11 +2646,44 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
     }
 
     for &pid in pids {
-        let Some(process) = ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) else {
-            continue;
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
         };
-        unsafe {
-            TerminateProcess(process.0, 1);
+        if handle.is_null() {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error()
+                == Some(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER as i32)
+            {
+                tracing::debug!(
+                    pid,
+                    error = %error,
+                    "process exited before it could be opened for termination"
+                );
+            } else {
+                tracing::warn!(pid, error = %error, "failed to open process for termination");
+            }
+            continue;
+        }
+        let process = ProcessHandle(handle);
+        if unsafe { TerminateProcess(process.0, 1) } == 0 {
+            let error = std::io::Error::last_os_error();
+            let mut exit_code = 0;
+            if unsafe { GetExitCodeProcess(process.0, &mut exit_code) } != 0
+                && exit_code != STILL_ACTIVE
+            {
+                tracing::debug!(
+                    pid,
+                    exit_code,
+                    error = %error,
+                    "process exited before it could be terminated"
+                );
+            } else {
+                tracing::warn!(pid, error = %error, "failed to terminate process");
+            }
         }
     }
 }
@@ -3200,7 +3234,7 @@ impl Drop for InputSourceRestore {
 mod tests {
     use std::{
         fs,
-        process::{Command, Stdio},
+        process::{Child, Command, Stdio},
         sync::Arc,
         thread,
         time::{Duration, Instant},
@@ -4138,6 +4172,77 @@ mod tests {
         assert!(
             command_line.contains("unique-cmdline-marker"),
             "unexpected command line: {command_line}"
+        );
+    }
+
+    #[test]
+    fn windows_signal_processes_terminates_owned_powershell_child() {
+        use std::io::BufRead as _;
+        use std::os::windows::process::CommandExt;
+
+        struct ChildGuard(Child);
+
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut command = Command::new("powershell.exe");
+        command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Write-Output ready; Start-Sleep -Seconds 30",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(super::CREATE_NO_WINDOW);
+        let mut child = ChildGuard(command.spawn().expect("spawn PowerShell"));
+        let stdout = child.0.stdout.take().expect("PowerShell stdout");
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut line = String::new();
+            let result = std::io::BufReader::new(stdout)
+                .read_line(&mut line)
+                .map(|_| line);
+            let _ = ready_tx.send(result);
+        });
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("PowerShell did not report ready")
+            .expect("read PowerShell ready");
+        assert_eq!(ready.trim(), "ready", "unexpected PowerShell ready output");
+
+        assert!(
+            child
+                .0
+                .try_wait()
+                .expect("check PowerShell startup")
+                .is_none(),
+            "PowerShell child exited before signal"
+        );
+
+        super::signal_processes(&[child.0.id()], super::Signal::Terminate);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.0.try_wait().expect("wait for terminated PowerShell") {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PowerShell child did not exit after termination signal"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            !status.success(),
+            "PowerShell child exited successfully instead of being terminated"
         );
     }
 
